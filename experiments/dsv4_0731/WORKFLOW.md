@@ -125,15 +125,21 @@ git remote add aga-checkout "oci-aga:$WORKSPACE/miles"
 git add <files>            # only this experiment's files; the tree carries
 git commit -s              # unrelated in-progress work that must not be committed
 git push aga <branch>                                  # canonical history
-git push aga-checkout <branch>:refs/heads/<branch>     # the cluster's copy
-ssh oci-aga "cd $WORKSPACE/miles && git checkout <branch> && git log -1 --oneline"
+git push aga-checkout <branch>                          # the cluster's copy
 ```
 
-The cluster reaches this host over SSH but has no key for GitLab, and agent
-forwarding is refused by its sshd, so it cannot fetch from the mirror itself.
-Pushing to its checkout directly works because the branch being pushed is not the
-one checked out there. GitLab stays the canonical history; once the cluster has
-its own credential, the second push collapses into a `git fetch aga`.
+The cluster has no credential for GitLab and its sshd refuses agent forwarding,
+so it cannot fetch from the mirror itself. Its checkout is therefore configured
+as a deploy target, which updates its working tree from the push:
+
+```bash
+ssh oci-aga "cd $WORKSPACE/miles && git config receive.denyCurrentBranch updateInstead"
+```
+
+That only applies cleanly to a clean tree, which is the point: a job now always
+runs a named commit, and `git log -1` on the cluster names it. GitLab holds the
+canonical history; once the cluster has its own credential the second push
+becomes a `git fetch aga` there.
 
 Snapshot the cluster's tree onto a commit before the first switch. Its checkout
 carried uncommitted work from an earlier experiment, and a checkout would have
