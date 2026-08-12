@@ -15,8 +15,9 @@ def mxfp4_quantize(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize a tensor to MXFP4 with one UE8M0 exponent per 32 elements.
 
     Returns the payload packed two elements per byte, low nibble first, and the
-    biased exponents, matching the layout DeepSeek-V4 checkpoints ship and the
-    SGLang FP4 expert path reads.
+    biased exponents. The scale is left as ``uint8`` to match what the MXFP8
+    quantizer hands the weight updater; checkpoints on disk label the same bytes
+    ``float8_e8m0fnu``, and readers view rather than convert them.
     """
     weight = weight.contiguous()
     k = weight.shape[-1]
@@ -37,4 +38,4 @@ def mxfp4_quantize(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     codes = codes.reshape(*weight.shape[:-1], k)
     packed = (codes[..., 1::2] << 4) | codes[..., 0::2]
     scale = (exponent + E8M0_BIAS).to(torch.uint8).reshape(*weight.shape[:-1], k // MXFP4_GROUP_SIZE)
-    return packed.view(torch.int8), scale.view(torch.float8_e8m0fnu)
+    return packed.view(torch.int8), scale
