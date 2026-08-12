@@ -1,6 +1,6 @@
 # DeepSeek-V4-Flash-0731 MXFP8 RL bring-up
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Objective
 
@@ -211,6 +211,22 @@ serializes; that is inference from the timing, not something the checksums prove
 
 The MXFP4 quantizer gap in phase 2 is unaffected by this and still stands.
 
+### 429159 — phase 2, FAILED (23 m 35 s)
+
+Died at the initial `update_weights()` that runs before the first rollout, so
+nothing was measured. Every engine's four TP ranks raised
+`AttributeError: 'Parameter' object has no attribute 'weight_loader'` inside
+`load_weights` and the servers SIGQUIT together; the trainer saw only a closed
+connection. Ran commit `4324d6113`, whose `uint8` scale convention was itself
+wrong — see the phase 2 defects below.
+
+### 430045 — phase 2 smoke, commit `3f4600b6a`
+
+One rollout, evaluation off, carrying `patches/mxfp4_trtllm_hot_reload.patch`.
+Tests the three MXFP4 hand-over fixes together. `--check-weight-update-equal` is
+deliberately off: the comparison does not model the FP4 kernel layout and would
+be expected to report a difference that is not one.
+
 ### Configuration sweep against the hang
 
 Steps completed before an engine tripped its watchdog, all on phase 1:
@@ -239,36 +255,55 @@ Reading engine-side `torch.cuda.memory_allocated`/`reserved` and a live IPC
 handle count around each update would settle it, and is cheaper than continuing
 to sweep configurations.
 
-### Why both phases fail at the handover
+## Mismatch measurements
 
-Each phase hits a distinct gap in the online weight-update path, and both gaps
-are invisible until the first update because step 0 runs on weights that went
-through `process_weights_after_loading`.
+Phase 1's numbers are in hand and reproduce across three independent runs. These
+are the baseline phase 2 is meant to be compared against.
 
-**Phase 1 — MoE expert weights are shuffled at load and not re-shuffled after an
-update.** `moe_runner/flashinfer_trtllm.py` runs `shuffle_matrix_a` over the
-expert weights and serves them with `is_sf_swizzled_layout=True`. The dense path
-in `fp8.py` keeps a separate `weight_scale_inv_swizzled` with the comment "so
-store swizzled scales separately to keep weight update working"; the MoE path has
-no such provision. An update writes unshuffled weights into buffers the kernel
-reads as shuffled, and the next rollout wedges the GPU. This also explains why
-the survey found no working alternative: the only MXFP8-capable MoE backend on
-SM100 is the one that shuffles.
+| Job | Step 0 `train_rollout_kl` / `logprob_abs_diff` | Step 1 |
+|---|---|---|
+| 427089 | 0.00800 / 0.0505 | 0.00894 / 0.0546 |
+| 425993 | 0.00760 / 0.0472 | 0.00851 / 0.0522 |
+| 427554 | 0.00780 / 0.0472 | — |
 
-**Phase 2 — there is no MXFP4 quantizer in the update path.** `quantize_params`
-dispatches on the rollout checkpoint's `quant_method`, and the release config
-reports `fp8` with `weight_block_size [128, 128]` even though its routed experts
-are packed MXFP4. The updater therefore emits block-scaled FP8 into expert
-buffers that `SGLANG_DSV4_FP4_EXPERTS=1` created as packed MXFP4, and the engine
-dies outright. `processors/` holds fp8, mxfp8, nvfp4 and compressed-tensors
-quantizers, but no mxfp4.
+Step 0 agrees to about 7% across runs, so the measurement is stable. Note that
+the metric is produced during training on the rollout just taken, which makes it
+available after a single step: comparing rollout formats does not need the
+four-step run, only a run that reaches training.
 
-Neither is a configuration problem, so no further parameter sweep will clear
-them. Phase 1 needs the MoE shuffle re-applied after each update — either by
-keeping an unshuffled copy the way the dense path does, or by re-running the
-expert post-processing on update. Phase 2 additionally needs an MXFP4 quantizer;
-the encoding is fully pinned down by `mxfp4_dequant` and its tests, so writing
-the inverse is tractable.
+## What blocks each phase
+
+**Phase 1 is not blocked on correctness.** Its weight-update path is sound. The
+kernel layout the MXFP8 experts are served in preserves both the dtype and the
+extent of the layout weights load in, so each update refills the parameters from
+scratch and the layout is rebuilt from canonical data. Rebuilding is not
+idempotent — calling it twice on its own output changes all four parameters —
+but it is never fed its own output. What remains is the hang described in the
+sweep above, which costs steps rather than correctness.
+
+**Phase 2 was blocked by three defects in the MXFP4 rollout path**, all in how
+weights are handed over rather than in the encoding, and all fixed and checked
+against real tensors before submission:
+
+1. Building the kernel layout replaced the expert parameters with plain ones,
+   dropping the loader attributes `create_weights` installs. The second load —
+   the first online update — raised `AttributeError: 'Parameter' object has no
+   attribute 'weight_loader'`. This is what killed 429159.
+2. Unlike the MXFP8 path, the MXFP4 kernel layout differs from the load layout in
+   dtype, and for the second-gemm scale in extent. Writing weights back into it
+   casts them to the wrong values instead of failing: a scale byte of 130 stored
+   into the `float8_e4m3fn` parameter reads back as 112. The layout is now
+   restored before weights arrive, each parameter released before its replacement
+   is allocated so both layouts are never resident.
+3. MXFP4 scales are staged in a float parameter and converted back to UE8M0 once
+   the tensor has arrived, so a scale has to carry its power of two rather than
+   the byte encoding it. Handing over `uint8` collapsed the exponents 120, 127,
+   130 and 140 onto a single byte; `float8_e8m0fnu` round-trips exactly.
+
+End to end, an update now reproduces the initial load byte for byte on all four
+expert parameters. The earlier claim that phase 1 fails because the MoE shuffle
+is not re-applied, and that phase 2 fails only for want of an MXFP4 quantizer,
+were both wrong; the quantizer was necessary but not sufficient.
 
 ## Environment
 
