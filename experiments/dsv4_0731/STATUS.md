@@ -307,6 +307,22 @@ not reproduce in 431471 — whose only deliberate difference was the
 instrumentation. Treat it as intermittent until something reproduces it on
 demand.
 
+### Where the watchdog actually fires
+
+427089's py-spy dump, taken by the watchdog itself, puts the scheduler at
+`get_next_batch_to_run` line 2802 — the call into `get_new_batch_prefill` —
+with native frames below it ending in `clock_nanosleep`. The only `time.sleep`
+in `scheduler.py` is an init-time test hook, so that is a native wait: a CUDA
+synchronization, not Python.
+
+424444's dump agrees from the other side: `cudaStreamSynchronize` beneath
+`alloc_for_extend`, also in prefill. Two independent failures put the stall in
+the same place — the first prefill after a weight update, blocked on the device.
+
+So the engine is not busy and not out of memory. It is waiting on a kernel that
+never retires, which is why every configuration sweep that changed scheduling
+pressure moved the step count around without ever fixing it.
+
 ### Configuration sweep against the hang
 
 Steps completed before an engine tripped its watchdog, all on phase 1:
