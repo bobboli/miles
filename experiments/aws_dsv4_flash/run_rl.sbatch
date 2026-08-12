@@ -39,6 +39,9 @@ wandb_run_id=${WANDB_RUN_ID:-}
 skip_saving=${SKIP_SAVING:-1}
 use_fault_tolerance=${USE_FAULT_TOLERANCE:-1}
 sglang_patch_file=${SGLANG_PATCH_FILE:-}
+# The SGLang patches are applied to the image's own sources, so a moving tag can
+# break them without any change here. Pin the digest for a result worth keeping.
+container_image=${CONTAINER_IMAGE:-radixark/miles:latest}
 moe_runner_backend=${SGLANG_MOE_RUNNER_BACKEND:-}
 fp8_gemm_backend=${SGLANG_FP8_GEMM_BACKEND:-}
 # Appended verbatim to --extra-args, for switches this wrapper does not model.
@@ -143,6 +146,7 @@ export FAULT_TOLERANCE_ARGS="${fault_tolerance_args}"
 export BACKEND_ARGS="${backend_args}"
 export EXTRA_ARGS_APPEND="${extra_args_append}"
 export SGLANG_PATCH_FILE="${sglang_patch_file}"
+export CONTAINER_IMAGE="${container_image}"
 export RUN_ID="${run_id}"
 export HEAD_NODE
 HEAD_NODE=$(scontrol show hostnames "${SLURM_NODELIST}" | head -n1)
@@ -151,10 +155,10 @@ HEAD_NODE=$(scontrol show hostnames "${SLURM_NODELIST}" | head -n1)
 export SLURM_EXPORT_ENV=ALL
 
 echo "job=${SLURM_JOB_ID} run_id=${run_id} model=${model_name} precision=${precision} nodes=${SLURM_JOB_NUM_NODES}"
-echo "head_node=${HEAD_NODE} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none}"
+echo "head_node=${HEAD_NODE} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none} container_image=${container_image}"
 
 srun --kill-on-bad-exit=1 \
-  --container-image=radixark/miles:latest \
+  --container-image="${CONTAINER_IMAGE}" \
   --no-container-mount-home \
   --container-mounts="${code}:/workspace/miles,${base}:/workspace/data,/raid:/raid" \
   --container-workdir=/workspace/miles \
