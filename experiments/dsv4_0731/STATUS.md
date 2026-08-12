@@ -220,12 +220,34 @@ nothing was measured. Every engine's four TP ranks raised
 connection. Ran commit `4324d6113`, whose `uint8` scale convention was itself
 wrong — see the phase 2 defects below.
 
-### 430045 — phase 2 smoke, commit `3f4600b6a`
+### 430045 — phase 2 smoke, FAILED (23 m 23 s), commit `3f4600b6a`
 
-One rollout, evaluation off, carrying `patches/mxfp4_trtllm_hot_reload.patch`.
-Tests the three MXFP4 hand-over fixes together. `--check-weight-update-equal` is
-deliberately off: the comparison does not model the FP4 kernel layout and would
-be expected to report a difference that is not one.
+Never reached the weight update. Both patched SGLang sources verified, then
+every trainer actor asserted during `init()`:
+
+```
+--rematerialize-param-from-master-weight cannot restore 6 params
+  (not in the DDP param buffers nor in the extras backup):
+  ['module.module.decoder.layers.0.mlp.router.weight', ...]
+```
+
+`--moe-router-freeze-gate` keeps the router weights out of the DDP buffers, so
+rematerialization cannot cover them. This was a submission error rather than a
+finding: the run took the launcher's defaults instead of the environment the
+earlier phase 2 run established, which moved six settings at once —
+`REMATERIALIZE_PARAM_FROM_MASTER_WEIGHT`, `OFFLOAD_TRAIN_TARGET`, `MODE`,
+`USE_FAULT_TOLERANCE`, `SGLANG_MEM_FRACTION_STATIC` and the patch list. The
+launcher's defaults are not the configuration any run here uses; pass the
+environment explicitly.
+
+### 430381 — phase 2 smoke, commit `fce6ca869`
+
+429159's environment with one change: `patches/mxfp4_trtllm_hot_reload.patch`
+stacked after the existing `sglang_tensor_update_cuda_sync.patch`. One rollout,
+evaluation off. Tests the three MXFP4 hand-over fixes together.
+`--check-weight-update-equal` is deliberately off: the comparison does not model
+the FP4 kernel layout and would be expected to report a difference that is not
+one.
 
 ### Configuration sweep against the hang
 
