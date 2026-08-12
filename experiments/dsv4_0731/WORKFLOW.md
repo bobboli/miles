@@ -28,6 +28,64 @@ docker run --rm --gpus '"device=0"' --user $(id -u):$(id -g) \
 container cannot write to the bind mount. `USER` must be set or
 `getpass.getuser()` fails on the unmapped uid.
 
+## What the image provides, and which code actually runs
+
+`radixark/miles:latest`, digest
+`sha256:08be00658cd24eaa364ca4ad0b1a3911dfbe4adc04fd0c148e4241402fb40812`.
+It already contains a complete, installed stack — torch 2.11+cu130, Transformer
+Engine 2.17, and editable installs of miles, SGLang and Megatron-core. Nothing
+needs to be built or pip-installed to run a job.
+
+That raises the question this layout keeps provoking: when a checkout is also
+mounted, which copy executes? It depends on the package.
+
+| Package | Installed in the image at | What actually runs |
+|---|---|---|
+| `miles`, `miles_plugins`, `scripts/`, `tools/` | editable, `/root/miles` | **your mounted checkout** |
+| `sglang` | editable, `/sgl-workspace/sglang/python` | **the image's copy** |
+| `megatron-core` | editable, `/root/Megatron-LM` | the image's copy |
+| `mbridge`, `transformer_engine`, `torch` | site-packages | the image's copy |
+
+The override is `PYTHONPATH=/workspace/miles`, which the launcher exports and
+which precedes site-packages, so `import miles` resolves into the bind mount and
+the image's own copy at `/root/miles` never loads. Confirm it rather than assume
+it:
+
+```bash
+PYTHONPATH=/workspace/miles python -c \
+  "import miles, sglang, os; print(os.path.dirname(miles.__file__), os.path.dirname(sglang.__file__))"
+# /workspace/miles/miles  /sgl-workspace/sglang/python
+```
+
+Nothing mounts over SGLang, and `PYTHONPATH` cannot reach it, so SGLang changes
+have to be applied to the image's copy inside each container:
+
+```bash
+patch --batch --forward -p1 -d /sgl-workspace/sglang < some.patch
+```
+
+`run_rl.sbatch` does this for every rank from the space-separated
+`SGLANG_PATCH_FILE` list, and verifies the result compiles before starting Ray.
+The effect is ephemeral: it is re-applied on every job and vanishes with the
+container, which is what makes it safe to iterate on, and also why a patch that
+stops applying after an image refresh fails the job rather than silently
+reverting.
+
+So, by kind of change:
+
+- **miles, scripts, tools, plugins** — commit, push, update the cluster checkout;
+  the next job picks it up. No rebuild.
+- **SGLang** — write a `.patch` against `/sgl-workspace/sglang`, add it to
+  `SGLANG_PATCH_FILE`. Check it applies to a copy of the file from *this* image
+  before submitting; generating the diff from the image's own file guarantees it.
+- **Megatron-core, TE, torch** — needs a new image. Out of scope for experiment
+  work; treat their behaviour as fixed.
+
+The image is pulled by tag, and pyxis re-imports all 40 GB at the start of every
+job, costing several minutes before anything runs. Pin the digest for any result
+you intend to keep, and cache a `.sqsh` on the shared filesystem to remove the
+re-import.
+
 ## Validating a numeric change
 
 The conversion work held up because each layer was checked against something
