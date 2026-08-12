@@ -31,6 +31,7 @@ Usage patterns:
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -45,12 +46,16 @@ _DEFAULT_MODEL_ORG = {
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
     "DeepSeek-V4-Pro-FP8": "sgl-project",
+    # Official Flash release: same 43-layer decoder as the preview, but routed
+    # experts ship as packed MXFP4 and the speculative module is DSpark.
+    "DeepSeek-V4-Flash-0731": "deepseek-ai",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
+    "DeepSeek-V4-Flash-0731": "deepseek-v4-flash",
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
@@ -79,6 +84,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
+        "DeepSeek-V4-Flash-0731",
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
@@ -122,6 +128,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_fp8: bool = True
     train_mxfp8: bool = False
     rollout_mxfp8: bool = False
+    # Override the rollout kernel selection that the precision choice implies.
+    # Empty keeps the derived backend.
+    sglang_moe_runner_backend: str = ""
+    sglang_fp8_gemm_backend: str = ""
     enable_mis: bool = False
 
     # pass any extra sglang/miles/megatron args through `--extra-args '--your-arg'`
@@ -173,6 +183,16 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.rollout_fp8:
             return self.model_name
         return self.bf16_name
+
+
+def rollout_fp4_experts(args: ScriptArgs) -> bool:
+    """Whether the rollout checkpoint carries packed MXFP4 routed experts.
+
+    Only the official Flash release ships them, and only when it is served
+    directly; the preview and every converted rollout checkpoint hold unpacked
+    FP8 experts instead.
+    """
+    return args.rollout_fp8 and args.model_name == "DeepSeek-V4-Flash-0731"
 
 
 def _is_blackwell(args: ScriptArgs) -> bool:
@@ -283,7 +303,7 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif actor_num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
+    elif actor_num_nodes == 8 and args.model_name in ("DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731"):
         extra_args += (
             "--tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 8 "
@@ -539,10 +559,17 @@ def _train(args: ScriptArgs):
         sglang_fp8_gemm_backend = "auto"
     if args.rollout_mxfp8:
         sglang_moe_runner_backend = "flashinfer_trtllm_routed"
+    elif rollout_fp4_experts(args):
+        # Packed MXFP4 experts need a runner that reads them directly; on SM100
+        # this resolves to FlashInfer's TRT-LLM kernel, which quantizes the
+        # activations to MXFP8.
+        sglang_moe_runner_backend = "flashinfer_mxfp4"
     elif args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_moe_runner_backend = "deep_gemm"
     else:
         sglang_moe_runner_backend = "auto"
+    sglang_moe_runner_backend = args.sglang_moe_runner_backend or sglang_moe_runner_backend
+    sglang_fp8_gemm_backend = args.sglang_fp8_gemm_backend or sglang_fp8_gemm_backend
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         f"--sglang-fp8-gemm-backend {sglang_fp8_gemm_backend} "
@@ -570,11 +597,13 @@ def _train(args: ScriptArgs):
         )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_DSV4_FP4_EXPERTS": "1" if rollout_fp4_experts(args) else "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
+    if nccl_launch_order_implicit := os.environ.get("NCCL_LAUNCH_ORDER_IMPLICIT"):
+        extra_env_vars["NCCL_LAUNCH_ORDER_IMPLICIT"] = nccl_launch_order_implicit
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
         extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
@@ -597,6 +626,9 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+    if rollout_fp4_experts(args):
+        misc_args += "--rollout-fp4-experts "
+
     if args.colocate:
         misc_args += "--colocate "
     else:
@@ -630,7 +662,7 @@ def _train(args: ScriptArgs):
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
         extra_env_vars |= {
-            "NCCL_ALGO": "Ring",
+            "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }

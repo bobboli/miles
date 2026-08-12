@@ -1,3 +1,4 @@
+import gc
 import hashlib
 import logging
 import math
@@ -269,7 +270,11 @@ class UpdateWeightFromTensor:
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
-                del long_lived_tensors
+                # Keep every rank's CUDA IPC storage alive until all colocated
+                # engines have imported the bucket, then start the next bucket
+                # from a common collective epoch.
+                dist.barrier(group=get_gloo_group())
+                del hf_named_tensors, long_lived_tensors, refs, results
 
             mm_tower_tensors = self._mm_tower_named_tensors()
             if mm_tower_tensors is not None:
@@ -316,9 +321,26 @@ class UpdateWeightFromTensor:
         if rank == 0:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
+                end_weight_update(
+                    self.rollout_engines,
+                    check_weights=getattr(self.args, "check_weight_update_equal", False),
+                )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
+
+        del megatron_local_weights
+        if (
+            not skip_base_sync
+            and getattr(self.args, "colocate", False)
+            and getattr(self.args, "offload_train", False)
+        ):
+            # IPC-sent allocations remain live until Python references and
+            # consumer handles are both gone. Collect IPC before returning the
+            # resulting inactive blocks to the CUDA driver.
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
         """Frozen vision/audio tower tensors to append to every base sync (see

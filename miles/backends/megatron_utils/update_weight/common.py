@@ -446,9 +446,20 @@ def weight_update_selector(args) -> str:
     return "all"
 
 
-def end_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Close the weight-update session (post-load + quant post-process on the full model)."""
+def end_weight_update(rollout_engines: Sequence[ActorHandle], check_weights: bool = False):
+    """Close the weight-update session (post-load + quant post-process on the full model).
+
+    With ``check_weights``, the engines validate the finalized tensors before
+    generation resumes, so a layout or quantization mismatch surfaces here rather
+    than as a wedged kernel partway through the next rollout.
+    """
     ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
+    if check_weights:
+        results = ray.get(
+            [engine.check_weights.remote(action="checksum", allow_quant_error=False) for engine in rollout_engines]
+        )
+        for engine_index, result in enumerate(results):
+            logger.info(f"post-update weight check on engine {engine_index}: {result}")
 
 
 def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:

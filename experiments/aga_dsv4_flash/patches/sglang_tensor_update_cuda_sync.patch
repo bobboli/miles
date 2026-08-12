@@ -1,0 +1,42 @@
+diff --git a/python/sglang/srt/managers/scheduler_components/weight_updater.py b/python/sglang/srt/managers/scheduler_components/weight_updater.py
+index 150aa18d3b..5e43dc392f 100644
+--- a/python/sglang/srt/managers/scheduler_components/weight_updater.py
++++ b/python/sglang/srt/managers/scheduler_components/weight_updater.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import gc
+ import logging
+ import time
+ import traceback
+@@ -259,6 +259,10 @@ class SchedulerWeightUpdaterManager:
+             named_tensors = MultiprocessingSerializer.deserialize(
+                 recv_req.serialized_named_tensors[self.tp_worker.ps.tp_rank]
+             )
++            ipc_flattened_tensor = None
++            if recv_req.load_format == "flattened_bucket":
++                ipc_flattened_tensor = named_tensors["flattened_tensor"]
++                named_tensors["flattened_tensor"] = ipc_flattened_tensor.clone()
+             success, message = True, "Success"
+             for _, runner in self.get_model_runners(recv_req.selector):
+                 success, message = runner.weight_updater.update_weights_from_tensor(
+@@ -267,6 +271,9 @@ class SchedulerWeightUpdaterManager:
+                 )
+                 if not success:
+                     break
++            torch.get_device_module().synchronize()
++            del ipc_flattened_tensor
++            del named_tensors
+             if success:
+                 self._weight_update_loaded = True
+             if success:
+@@ -321,6 +328,10 @@ class SchedulerWeightUpdaterManager:
+         for _, runner in self.get_model_runners(self._weight_update_selector):
+             runner.end_weight_update(run_post_load=run_post_load)
+         self._weight_update_in_progress = False
++        torch.get_device_module().synchronize()
++        gc.collect()
++        torch.cuda.ipc_collect()
++        torch.cuda.empty_cache()
+         torch.distributed.barrier(group=self.tp_cpu_group)
+         return EndWeightUpdateReqOutput(success=True, message="Success")

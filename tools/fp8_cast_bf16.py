@@ -40,6 +40,41 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> t
     return y
 
 
+def to_float_scale(s: torch.Tensor) -> torch.Tensor:
+    """Materialize a block scale as float32 whether it is stored as UE8M0 or float."""
+    if s.dtype == getattr(torch, "float8_e8m0fnu", None):
+        return s.float().contiguous()
+    return s.float().contiguous() if s.dtype != torch.float32 else s.contiguous()
+
+
+# MXFP4 stores two E2M1 elements per byte, low nibble first, with one shared
+# UE8M0 exponent per MXFP4_BLOCK_SIZE elements along the input dimension.
+MXFP4_BLOCK_SIZE = 32
+E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+E2M1_TABLE = torch.tensor(E2M1_VALUES + tuple(-v for v in E2M1_VALUES), dtype=torch.float32)
+
+
+def is_mxfp4_weight(x: torch.Tensor, s: torch.Tensor) -> bool:
+    """Tell a packed MXFP4 weight from a block-scaled FP8 one by its scale extent."""
+    return x.dim() == 2 and s.dim() == 2 and s.size(-1) == x.size(-1) * 2 // MXFP4_BLOCK_SIZE
+
+
+def mxfp4_dequant(x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+    """Unpack a rowwise MXFP4 weight and apply its UE8M0 block exponents."""
+    assert x.dim() == 2 and s.dim() == 2
+    out_dim, packed_dim = x.size()
+    in_dim = packed_dim * 2
+    assert s.size(0) == out_dim and s.size(1) == in_dim // MXFP4_BLOCK_SIZE
+
+    codes = x.view(torch.uint8)
+    nibbles = torch.stack((codes & 0x0F, (codes >> 4) & 0x0F), dim=-1).flatten(1)
+    values = E2M1_TABLE.to(x.device)[nibbles.long()]
+
+    exponents = torch.exp2(s.view(torch.uint8).float() - 127.0)
+    values = values.view(out_dim, -1, MXFP4_BLOCK_SIZE) * exponents.unsqueeze(-1)
+    return values.view(out_dim, in_dim).to(torch.get_default_dtype())
+
+
 def main(fp8_path, bf16_path):
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
@@ -66,17 +101,32 @@ def main(fp8_path, bf16_path):
 
     # Cache for loaded safetensor files
     loaded_files = {}
-    fp8_weight_names = []
 
     # Helper function to get tensor from the correct file
-    def get_tensor(tensor_name):
-        raw_tensor_name = raw_name_by_renamed[tensor_name]
+    def get_tensor(raw_tensor_name):
         file_name = weight_map_raw[raw_tensor_name]
         if file_name not in loaded_files:
             file_path = os.path.join(fp8_path, file_name)
             loaded_files[file_name] = load_file(file_path, device="cuda")
 
         return loaded_files[file_name][raw_tensor_name]
+
+    def raw_scale_name(raw_weight_name):
+        """Locate the block scale stored alongside a quantized weight.
+
+        Resolution happens in the checkpoint's own namespace so that tensors the
+        HF remap does not recognize still find their scale. Native checkpoints
+        name it `<prefix>.scale`; HF-format ones append `_scale_inv`.
+        """
+        if not raw_weight_name.endswith(".weight"):
+            return None
+        stem = raw_weight_name.removesuffix(".weight")
+        for candidate in (f"{stem}.scale", f"{raw_weight_name}_scale_inv"):
+            if candidate in weight_map_raw:
+                return candidate
+        return None
+
+    scale_names_raw = {scale for name in weight_map_raw if (scale := raw_scale_name(name)) is not None}
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
@@ -88,20 +138,24 @@ def main(fp8_path, bf16_path):
 
         new_state_dict = {}
         for weight_name_raw, weight in current_state_dict.items():
-            weight_name = remap(weight_name_raw)
-
-            if weight_name.endswith("_scale_inv"):
+            if weight_name_raw in scale_names_raw:
                 continue
-            elif weight.element_size() == 1:  # FP8 weight
-                scale_inv_name = f"{weight_name}_scale_inv"
-                try:
-                    # Get scale_inv from the correct file
-                    scale_inv = get_tensor(scale_inv_name)
-                    fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
-                except KeyError:
-                    print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
-                    new_state_dict[weight_name] = weight
+
+            weight_name = remap(weight_name_raw)
+            if weight.element_size() == 1:  # FP8 or packed MXFP4 weight
+                scale_raw = raw_scale_name(weight_name_raw)
+                if scale_raw is None:
+                    # Copying a quantized payload through unchanged would look
+                    # like a successful cast while producing garbage weights.
+                    raise KeyError(
+                        f"No block scale found for quantized weight {weight_name_raw} "
+                        f"(dtype {weight.dtype}); refusing to emit an unconverted tensor."
+                    )
+                scale_inv = get_tensor(scale_raw)
+                if is_mxfp4_weight(weight, scale_inv):
+                    new_state_dict[weight_name] = mxfp4_dequant(weight, scale_inv)
+                else:
+                    new_state_dict[weight_name] = weight_dequant(weight, to_float_scale(scale_inv))
             else:
                 new_state_dict[weight_name] = weight
 
@@ -114,12 +168,10 @@ def main(fp8_path, bf16_path):
             del loaded_files[oldest_file]
             torch.cuda.empty_cache()
 
-    # Update model index
+    # Update model index: the cast folds every block scale into its weight.
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
-    for weight_name in fp8_weight_names:
-        scale_inv_name = f"{weight_name}_scale_inv"
-        if scale_inv_name in weight_map_renamed:
-            weight_map_renamed.pop(scale_inv_name)
+    for scale_raw in scale_names_raw:
+        weight_map_renamed.pop(remap(scale_raw), None)
     with open(new_model_index_file, "w") as f:
         json.dump({"metadata": {}, "weight_map": weight_map_renamed}, f, indent=2)
 

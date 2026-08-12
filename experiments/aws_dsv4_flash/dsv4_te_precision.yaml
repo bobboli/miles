@@ -1,0 +1,10 @@
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  dsa_indexer_weights_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.indexer.linear_weights_proj"
+    config: "bf16"

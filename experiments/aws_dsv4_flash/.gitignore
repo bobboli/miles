@@ -1,0 +1,2 @@
+# Profiler captures; large binaries that do not belong in git.
+artifacts/

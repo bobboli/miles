@@ -1,0 +1,12 @@
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -1656,6 +1656,9 @@
+         if run_post_load:
+             post_load_weights(self.model)
+         postprocess_weight(self.model, torch.device(self.device))
++        # Finalizing quantized weights into kernel layout queues device work, and
++        # generation resumes as soon as this call returns, so drain it first.
++        torch.get_device_module(self.device).synchronize()
+ 
+     def check_weights(
+         self,

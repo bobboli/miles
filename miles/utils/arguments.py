@@ -2112,6 +2112,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
+                "--rollout-fp4-experts",
+                action="store_true",
+                help=(
+                    "The rollout checkpoint carries packed MXFP4 routed experts, so weight "
+                    "updates must quantize those to MXFP4 rather than block-scaled FP8."
+                ),
+            )
+            parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
                 default="all",
@@ -2224,6 +2232,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         def add_network_arguments(parser):
             parser.add_argument("--http-proxy", type=str, default=None)
             parser.add_argument("--use-distributed-post", action="store_true", default=False)
+            parser.add_argument(
+                "--http-request-timeout",
+                type=float,
+                default=None,
+                help="Timeout in seconds for rollout HTTP requests. The default disables timeouts.",
+            )
             return parser
 
         def add_reward_model_arguments(parser):
