@@ -1,2 +1,5 @@
 # Downloaded shards and checkpoint slices used only for local validation.
 refdata/
+
+# Copies of the image's SGLang sources, kept only to regenerate the patches.
+patches/src/

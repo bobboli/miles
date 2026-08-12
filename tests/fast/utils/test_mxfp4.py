@@ -61,6 +61,19 @@ def test_quantize_emits_the_packed_layout():
     assert packed.view(torch.uint8)[0, 0].item() == (7 << 4) | 2
 
 
+def test_quantize_emits_scales_that_carry_their_value():
+    # The rollout backend stages scales in a float parameter, so a scale has to
+    # read back as its power of two rather than as its biased exponent.
+    weight = torch.zeros(1, MXFP4_GROUP_SIZE)
+    weight[0, 0] = 48.0  # 6.0 * 2**3, so the block exponent is 3
+
+    _, scale = mxfp4_quantize(weight)
+
+    assert scale.dtype == torch.float8_e8m0fnu
+    assert scale.float().item() == 8.0
+    assert scale.view(torch.uint8).item() == 3 + 127
+
+
 def test_quantize_encodes_zero_blocks_without_nan():
     packed, scale = mxfp4_quantize(torch.zeros(2, MXFP4_GROUP_SIZE))
 
