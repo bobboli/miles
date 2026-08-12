@@ -249,6 +249,64 @@ evaluation off. Tests the three MXFP4 hand-over fixes together.
 the FP4 kernel layout and would be expected to report a difference that is not
 one.
 
+### 431471 — phase 1 complete, COMPLETED (1 h 28 m), commit `9918cd1d1`
+
+Four steps of MXFP8 training against MXFP8 rollout, clean exit. 427089's
+environment with one change: `patches/weight_update_memory_log.patch`.
+
+| Step | `train_rollout_kl` | `train_rollout_logprob_abs_diff` | `perf/rollout_time` |
+|---:|---:|---:|---:|
+| 0 | 0.007814 | 0.04838 | 232.8 s |
+| 1 | 0.008170 | 0.05231 | 233.0 s |
+| 2 | 0.007550 | 0.04878 | 237.0 s |
+| 3 | 0.007929 | 0.04850 | 238.6 s |
+
+The mismatch oscillates within 0.0076–0.0082 and does not drift over four
+steps. Rollout time rises 2.5% across the run.
+
+## Where the memory goes during an update
+
+Driver figures for one engine's rank 0, at the end of each of the five updates:
+
+| Update | `reserved` | driver used | free |
+|---:|---:|---:|---:|
+| 1 | 172018 | 90878 | 192383 |
+| 2 | 172050 | 92914 | 190347 |
+| 3 | 172060 | 92394 | 190867 |
+| 4 | 172054 | 92304 | 190957 |
+| 5 | 172106 | 92946 | 190315 |
+
+The allocator's own figures are not usable here: `memory_allocated` reports
+164 GiB against a driver-reported 83 GiB in use, because the memory saver
+releases physical pages while keeping the allocator's bookkeeping. Only
+`mem_get_info` describes the device.
+
+The first update raises device usage by about 6 GiB and it does not come back,
+but subsequent updates settle onto a plateau rather than accumulating, and
+`reserved` moves by 88 MiB across the whole run. Host RSS stays near 100 GiB.
+So the update path does not leak, and memory accumulation is not what ends
+these runs. That is the third cause proposed for the hang and refuted by
+measurement.
+
+### What the failing runs actually did
+
+Rollout durations tell the story the watchdog obscures:
+
+| Job | Rollout times | Outcome |
+|---|---|---|
+| 425993 | 230, 224 | clean exit at 2 steps |
+| 427554 | 229, 532 | engine watchdog |
+| 427089 | 235, 235, 1001 | engine watchdog |
+| 431471 | 233, 233, 237, 239 | clean exit at 4 steps |
+
+A run that fails does not stall: one rollout takes two to four times as long as
+its predecessors, and the scheduler's 300 s watchdog fires during it. Phase 2's
+430381, whose rollout ran 82 minutes without finishing, is the same shape
+further along. The failure is a throughput collapse, not a deadlock, and it did
+not reproduce in 431471 — whose only deliberate difference was the
+instrumentation. Treat it as intermittent until something reproduces it on
+demand.
+
 ### Configuration sweep against the hang
 
 Steps completed before an engine tripped its watchdog, all on phase 1:

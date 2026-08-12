@@ -10,6 +10,7 @@ Talos links open the same file in the browser.
 | Document | Why |
 |---|---|
 | [dsv4_0731/STATUS.md](dsv4_0731/STATUS.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/STATUS.md) | The current experiment. Objective, checkpoint layout, conversion, run log, mismatch numbers, and what blocks each phase. |
+| [dsv4_0731/RETROSPECTIVE.md](dsv4_0731/RETROSPECTIVE.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/RETROSPECTIVE.md) | What it took to get MXFP8 running, why it was hard, and what to change. Read this before starting similar work. |
 | [dsv4_0731/WORKFLOW.md](dsv4_0731/WORKFLOW.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/WORKFLOW.md) | How the work is done: the three tiers, which copy of each package a job actually runs, how a numeric change is validated, how code reaches the cluster. |
 
 ## Current experiment — 0731 MXFP8 / MXFP4 rollout
