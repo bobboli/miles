@@ -307,6 +307,36 @@ not reproduce in 431471 — whose only deliberate difference was the
 instrumentation. Treat it as intermittent until something reproduces it on
 demand.
 
+### 433028 — phase 2 reaches training, COMPLETED (51 m), commit `618c37b7b`
+
+Phase 2's environment with dynamic sampling off, so the rollout finishes in one
+wave instead of resampling. Both weight updates completed — 65.4 s and 60.0 s —
+so the hand-over works. What it serves does not:
+
+| Metric | 433028 (MXFP4 rollout) | 431471 (MXFP8 rollout) |
+|---|---:|---:|
+| `rollout/raw_reward` | 0.0 | 0.51–0.59 |
+| `rollout/truncated_ratio` | 0.996 | — |
+| `rollout/response_lengths` | 4087 | — |
+| `train_rollout_kl` | 0.3347 | 0.0078 |
+| `train_rollout_logprob_abs_diff` | 0.4502 | 0.0484 |
+
+Nothing is answered correctly, and 99.6% of responses run to the 4096-token
+limit at a mean length of 4087 — the model does not stop. A mismatch 43 times
+phase 1's is not a quantization gap; the rollout is serving wrong weights.
+
+This also explains 430381's 82-minute rollout. With dynamic sampling on, every
+group's rewards agree at zero, so every group is discarded and sampling never
+converges. The rollout was not slow: it was being thrown away.
+
+The defect is not in the encoder or in the layout restore. `mxfp4_quantize`
+reproduces real checkpoint tensors byte for byte
+(`validate_mxfp4_quantize.py`), and an update reproduces the initial load byte
+for byte (`validate_mxfp4_hot_reload.py`). But that second check stubs out
+`Fp8MoEMethod.process_weights_after_loading`, which the real path runs *first*,
+before the reorder and shuffle. Whether that pass is reentrant across a restore
+is untested, and is the next thing to measure.
+
 ### Where the watchdog actually fires
 
 427089's py-spy dump, taken by the watchdog itself, puts the scheduler at
