@@ -1,0 +1,69 @@
+--- a/python/sglang/srt/managers/scheduler_components/weight_updater.py
++++ b/python/sglang/srt/managers/scheduler_components/weight_updater.py
+@@ -2,6 +2,7 @@
+ 
+ import gc
+ import logging
++import os
+ import time
+ import traceback
+ from contextlib import contextmanager
+@@ -54,6 +55,39 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
++MEMORY_LOG_INTERVAL = 64
++_buckets_seen = 0
++
++
++def log_memory(tag: str, tp_rank: int, bucket: Optional[int] = None) -> None:
++    """Report device and host memory around a weight update.
++
++    ``free`` comes from the driver rather than the caching allocator, so it also
++    accounts for memory the allocator never sees — imported IPC mappings among
++    it. A run whose allocator figures are flat while ``free`` falls is leaking
++    outside the allocator.
++
++    An update is delivered as hundreds of buckets, so bucket-level reports are
++    sampled; the report at the end of an update is always emitted.
++    """
++    free, total = torch.cuda.mem_get_info()
++    with open("/proc/self/statm") as f:
++        rss = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
++    mib = 1 << 20
++    logger.info(
++        "weight-update memory %s rank=%d bucket=%s alloc=%dMiB reserved=%dMiB "
++        "free=%dMiB used=%dMiB rss=%dMiB",
++        tag,
++        tp_rank,
++        bucket,
++        torch.cuda.memory_allocated() // mib,
++        torch.cuda.memory_reserved() // mib,
++        free // mib,
++        (total - free) // mib,
++        rss // mib,
++    )
++
++
+ def _merge_checksum_payloads(role_payloads: List[Tuple[str, Dict]]) -> Dict:
+     merged: Dict[str, str] = {}
+     parallelism_infos = []
+@@ -256,6 +290,10 @@
+             self._weight_update_in_progress
+         ), "update_weights_from_tensor requires an open begin_weight_update session"
+         with self._observe_weight_load("tensor"):
++            global _buckets_seen
++            _buckets_seen += 1
++            if _buckets_seen % MEMORY_LOG_INTERVAL == 1:
++                log_memory("bucket", self.tp_worker.ps.tp_rank, _buckets_seen)
+             monkey_patch_torch_reductions()
+             named_tensors = MultiprocessingSerializer.deserialize(
+                 recv_req.serialized_named_tensors[self.tp_worker.ps.tp_rank]
+@@ -334,6 +372,7 @@
+         torch.cuda.ipc_collect()
+         torch.cuda.empty_cache()
+         torch.distributed.barrier(group=self.tp_cpu_group)
++        log_memory("settled", self.tp_worker.ps.tp_rank, _buckets_seen)
+         return EndWeightUpdateReqOutput(success=True, message="Success")
+ 
+     def release_memory_occupation(self, recv_req: ReleaseMemoryOccupationReqInput):
