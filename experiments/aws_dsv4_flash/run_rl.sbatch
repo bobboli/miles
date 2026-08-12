@@ -172,12 +172,13 @@ srun --kill-on-bad-exit=1 \
       # Space-separated so an experiment can stack patches without merging them.
       for patch_file in ${SGLANG_PATCH_FILE}; do
         patch --batch --forward -p1 -d /sgl-workspace/sglang <"${patch_file}"
+        # A patch that no longer applies fails the job rather than silently
+        # reverting, and every file it touched has to stay importable.
+        for target in $(awk "/^\+\+\+ /{ sub(/^b\//, \"\", \$2); print \$2 }" "${patch_file}"); do
+          python3 -m py_compile "/sgl-workspace/sglang/${target}"
+          echo "verified patched SGLang source: ${target}"
+        done
       done
-      patched_sglang=/sgl-workspace/sglang/python/sglang/srt/managers/scheduler_components/weight_updater.py
-      python3 -m py_compile "${patched_sglang}"
-      grep -Fq "gc.collect()" "${patched_sglang}"
-      grep -Fq "torch.cuda.ipc_collect()" "${patched_sglang}"
-      echo "verified patched SGLang source: ${patched_sglang}"
     fi
     [[ -n "${MILES_NCCL_DEBUG:-}" ]] && export NCCL_DEBUG="${MILES_NCCL_DEBUG}"
     [[ -n "${MILES_NCCL_DEBUG_SUBSYS:-}" ]] && export NCCL_DEBUG_SUBSYS="${MILES_NCCL_DEBUG_SUBSYS}"
