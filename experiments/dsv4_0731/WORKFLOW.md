@@ -152,6 +152,14 @@ Snapshot the cluster's tree onto a commit before the first switch. Its checkout
 carried uncommitted work from an earlier experiment, and a checkout would have
 discarded it.
 
+A push updates the tree a running job is reading. Slurm snapshots the batch
+script at submission, but everything under `miles/`, `scripts/` and `tools/` is
+read live from the mount, and Python imports lazily — so a push mid-run can put a
+job on two versions at once. Push between jobs, or wait.
+
+Submit through `submit.sh`, which sources `launch/<phase>.env`. The launcher's
+own defaults are not the configuration any run here uses.
+
 Per-file `rsync` was the original approach and it failed twice in one session:
 a job was submitted against a checkout missing a fix that had been made locally
 minutes earlier, and another against a launcher that had never received the flag
