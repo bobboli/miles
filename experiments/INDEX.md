@@ -36,6 +36,8 @@ Validation tools, in the order the workflow applies them:
 | [dsv4_0731/validate_mxfp4_dequant.py](dsv4_0731/validate_mxfp4_dequant.py) | Does our decode match SGLang's runtime decode on a real shard, bit for bit. |
 | [dsv4_0731/make_mini_checkpoint.py](dsv4_0731/make_mini_checkpoint.py) | Slices a shard into a one-file checkpoint so the conversion entry point runs end to end. |
 | [dsv4_0731/assert_fully_dequantized.py](dsv4_0731/assert_fully_dequantized.py) | Did any quantized payload or orphaned scale survive into the emitted artifact. |
+| [dsv4_0731/validate_mxfp4_quantize.py](dsv4_0731/validate_mxfp4_quantize.py) | Does the encoder the updater uses reproduce the checkpoint's own bytes. |
+| [dsv4_0731/validate_mxfp4_hot_reload.py](dsv4_0731/validate_mxfp4_hot_reload.py) | Does a second load — an online update — reproduce the first, byte for byte. |
 
 Job scripts: [download_0731.sbatch](dsv4_0731/download_0731.sbatch),
 [prepare_0731.sbatch](dsv4_0731/prepare_0731.sbatch), and the RL launcher

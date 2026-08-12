@@ -108,9 +108,16 @@ independent, in this order:
    re-reads the emitted safetensors headers and fails if any quantized payload or
    orphaned scale survived. It caught two unconverted tensors in a 567 GB output
    that otherwise looked complete.
+6. **Drive the second load, not just the first.** Nothing in a rollout backend
+   rejects weights written into the wrong layout, and the first load is the one
+   that cannot expose it. `validate_mxfp4_hot_reload.py` performs an update on a
+   two-expert layer and compares against the initial load byte for byte;
+   `validate_mxfp4_quantize.py` re-encodes real checkpoint tensors and compares
+   against the bytes they came from. Both run in about a minute on one GPU.
 
 Rule of thumb: a conversion step that can fail silently needs an artifact check,
-because "the job exited 0" says nothing about the bytes.
+because "the job exited 0" says nothing about the bytes. A hand-over that can
+fail silently needs to be exercised twice, because the first time never fails.
 
 ## Syncing code to the cluster
 
