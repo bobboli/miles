@@ -118,16 +118,26 @@ Use git against the internal GitLab mirror, not `rsync`.
 
 ```bash
 # once
-git remote add aga git@gitlab-master.nvidia.com:12051/lbo/miles.git
+git remote add aga ssh://git@gitlab-master.nvidia.com:12051/lbo/miles.git
+git remote add aga-checkout "oci-aga:$WORKSPACE/miles"
 
 # each change
 git add <files>            # only this experiment's files; the tree carries
 git commit -s              # unrelated in-progress work that must not be committed
-git push aga <branch>
-
-# on the cluster
-ssh oci-aga "cd $WORKSPACE/miles && git fetch aga && git checkout <branch> && git log -1 --oneline"
+git push aga <branch>                                  # canonical history
+git push aga-checkout <branch>:refs/heads/<branch>     # the cluster's copy
+ssh oci-aga "cd $WORKSPACE/miles && git checkout <branch> && git log -1 --oneline"
 ```
+
+The cluster reaches this host over SSH but has no key for GitLab, and agent
+forwarding is refused by its sshd, so it cannot fetch from the mirror itself.
+Pushing to its checkout directly works because the branch being pushed is not the
+one checked out there. GitLab stays the canonical history; once the cluster has
+its own credential, the second push collapses into a `git fetch aga`.
+
+Snapshot the cluster's tree onto a commit before the first switch. Its checkout
+carried uncommitted work from an earlier experiment, and a checkout would have
+discarded it.
 
 Per-file `rsync` was the original approach and it failed twice in one session:
 a job was submitted against a checkout missing a fix that had been made locally
