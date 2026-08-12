@@ -337,6 +337,35 @@ for byte (`validate_mxfp4_hot_reload.py`). But that second check stubs out
 before the reorder and shuffle. Whether that pass is reentrant across a restore
 is untested, and is the next thing to measure.
 
+### What phase 2 changes besides the experts
+
+The two rollout checkpoints do not share a hand-over path:
+
+| | quant_method | weight_block_size |
+|---|---|---|
+| `DeepSeek-V4-Flash-0731-MXFP8` (phase 1) | `mxfp8` | `[1, 32]` |
+| `DeepSeek-V4-Flash-0731` (phase 2) | `fp8` | `[128, 128]` |
+
+Phase 1 sends every parameter through `quantize_params_mxfp8`. Phase 2 sends
+the routed experts through the MXFP4 processor and *everything else* — attention,
+the shared expert, the dense layers — through block-scaled FP8 at `[128, 128]`,
+which no run in this experiment has ever exercised. Broken attention produces
+the same signature as broken experts: nothing answered, everything truncated.
+
+So the fault is not necessarily in the MXFP4 work. The cheapest way to tell is a
+bisection: serve the release checkpoint with `SGLANG_DSV4_FP4_EXPERTS=0` and
+`SGLANG_DSV4_FP4_DEQUANT=1`, which dequantizes the packed experts at load and
+puts every parameter on the block-scaled FP8 path. If that is also broken the
+MXFP4 code is exonerated and the block-scaled path is the suspect; if it works,
+the fault is in the expert hand-over after all.
+
+Ruled out so far, each by measurement rather than reading: the encoder
+(`validate_mxfp4_quantize.py`), the layout restore
+(`validate_mxfp4_hot_reload.py`), the FP8 base method's post-load pass — its
+FP4 branch only re-views the payload as `int8` and does not touch scales — the
+scale suffix, which matches the FP8 path phase 1 uses, and the loader's write
+semantics, which narrow and `copy_` exactly as the verified round trip assumed.
+
 ### Where the watchdog actually fires
 
 427089's py-spy dump, taken by the watchdog itself, puts the scheduler at
