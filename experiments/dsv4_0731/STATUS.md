@@ -376,6 +376,47 @@ engine's *own* initial load. It cannot see an error that is already present in
 that load. SGLang serving this checkpoint normally is well-trodden, so this is
 unlikely, but it is not excluded by this run.
 
+### 443944 / 444087 — the serving path is fine, and why that settles it
+
+The release checkpoint served on one node, stock SGLang, packed MXFP4 experts on
+`flashinfer_mxfp4`, no patch and no weight update:
+
+| Prompt | Output | Tokens | Finish |
+|---|---|---:|---|
+| `2 + 2` | `…</think>4` | 26 | stop |
+| capital of France | `…</think>Paris` | 45 | stop |
+| `17 * 3` | `…</think>51` | 22 | stop |
+| complete "the sky is" | coherent | 124 | stop |
+
+None ran to the limit. 443944 failed first because the checkpoint ships no chat
+template; the smoke now renders through DeepSeek's own encoder, as the rollout
+does.
+
+Three facts now hold at once: the serving path works, the weights after an
+update compare equal, and serving *after* an update is broken. Together they
+point at state the kernel reads that `named_parameters()` does not describe —
+and the CUDA graphs SGLang captures at startup record the *addresses* of the
+tensors they read.
+
+Measured directly: every expert parameter moved across an update.
+
+```
+w13_weight             MOVED  0x73be5d00f800 -> 0x73be5d010400
+w2_weight              MOVED  0x73be5d013c00 -> 0x73be5d014400
+w13_weight_scale_inv   MOVED  0x73be5d013800 -> 0x73be5d00ae00
+w2_weight_scale_inv    MOVED  0x73be5d015c00 -> 0x73be5d016400
+```
+
+So the graph replays against the previous weights while every Python-visible
+view holds the new ones — which is exactly a weight checker that passes and a
+model that answers nothing. The MXFP8 path avoids this: `fp8.py`'s
+`_copy_or_rebind` prefers an in-place copy, and its comment says so. The MXFP4
+patch adopted that helper's intent for loader attributes and missed its intent
+for addresses.
+
+The fix keeps the kernel-layout storage and copies each rebuild into it.
+`validate_mxfp4_hot_reload.py` now asserts the addresses hold, and they do.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:

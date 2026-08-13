@@ -49,6 +49,7 @@ def build_layer() -> tuple[Module, Mxfp4FlashinferTrtllmMoEMethod]:
     method = Mxfp4FlashinferTrtllmMoEMethod.__new__(Mxfp4FlashinferTrtllmMoEMethod)
     method._fp8 = _NoOpFp8()
     method.prefix = "validate"
+    method._kernel_layout = {}
     layer.quant_method = method
     method.create_weights(
         layer,
@@ -86,6 +87,7 @@ def main() -> None:
     load_weights(layer)
     method.process_weights_after_loading(layer)
     initial = {n: p.data.clone() for n, p in layer.named_parameters()}
+    addresses = {n: p.data.data_ptr() for n, p in layer.named_parameters()}
 
     restore_moe_load_layout(layer)
     restored = {n: (tuple(p.shape), p.dtype) for n, p in layer.named_parameters()}
@@ -98,13 +100,21 @@ def main() -> None:
     method.process_weights_after_loading(layer)
 
     for name, param in layer.named_parameters():
+        # A captured CUDA graph reads the address it saw, so a rebuild that lands
+        # anywhere else serves the previous weights however equal the values look.
+        assert (
+            param.data.data_ptr() == addresses[name]
+        ), f"{name}: kernel-layout storage moved across an update"
         before = initial[name]
         assert before.shape == param.shape, f"{name}: {before.shape} became {param.shape}"
         assert torch.equal(
             before.view(torch.uint8), param.data.view(torch.uint8)
         ), f"{name}: an update does not reproduce the initial load"
 
-    print(f"MXFP4 hot reload reproduces the initial load on {len(EXPERT_PARAMS)} parameters.")
+    print(
+        f"MXFP4 hot reload reproduces the initial load, in place, on "
+        f"{len(EXPERT_PARAMS)} parameters."
+    )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 --- a/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
 +++ b/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
-@@ -45,6 +45,42 @@
+@@ -45,11 +45,48 @@
  )
  
  
@@ -43,7 +43,13 @@
  class Mxfp4FlashinferTrtllmMoEMethod:
  
      def __init__(self, fp8_method, prefix: str):
-@@ -79,18 +115,28 @@
+         self._fp8 = fp8_method
+         self.prefix = prefix
++        self._kernel_layout: dict[str, torch.Tensor] = {}
+         self.flashinfer_mxfp4_moe_precision = (
+             get_server_args().flashinfer_mxfp4_moe_precision
+         )
+@@ -79,18 +116,28 @@
          hidden_size: int,
          intermediate_size_per_partition: int,
          params_dtype,
@@ -72,7 +78,7 @@
              ),
              requires_grad=False,
          )
-@@ -100,6 +146,7 @@
+@@ -100,6 +147,7 @@
                  hidden_size,
                  intermediate_size_per_partition // 2,
                  dtype=torch.int8,
@@ -80,7 +86,7 @@
              ),
              requires_grad=False,
          )
-@@ -114,6 +161,7 @@
+@@ -114,6 +162,7 @@
                  2 * intermediate_size_per_partition,
                  hidden_size // fp4_block_k,
                  dtype=torch.float32,
@@ -88,7 +94,7 @@
              ),
              requires_grad=False,
          )
-@@ -123,6 +171,7 @@
+@@ -123,6 +172,7 @@
                  hidden_size,
                  intermediate_size_per_partition // fp4_block_k,
                  dtype=torch.float32,
@@ -96,10 +102,29 @@
              ),
              requires_grad=False,
          )
-@@ -135,6 +184,34 @@
+@@ -135,6 +185,53 @@
          layer.register_parameter("w2_weight_scale_inv", w2_weight_scale)
          set_weight_attrs(w2_weight_scale, scale_attrs)
  
++    def _install_kernel_layout(self, layer: Module, name: str, value: torch.Tensor) -> None:
++        """Publish a kernel-layout tensor, reusing the storage the kernel already reads.
++
++        A captured CUDA graph records the addresses of the tensors it reads, so a
++        rebuild has to land in the storage the capture saw. Allocating afresh
++        leaves the graph replaying against the previous weights while every
++        Python-visible view holds the new ones.
++        """
++        established = self._kernel_layout.get(name)
++        if (
++            established is not None
++            and established.shape == value.shape
++            and established.dtype == value.dtype
++        ):
++            established.copy_(value)
++            value = established
++        self._kernel_layout[name] = value
++        _rebind(layer, name, value)
++
 +    def restore_load_layout(self, layer: Module) -> None:
 +        """Put the expert parameters back in the layout weights are loaded in.
 +
@@ -131,7 +156,7 @@
      def process_weights_after_loading(self, layer: Module) -> None:
          from sglang.srt.layers.quantization.utils import reorder_w1w3_to_w3w1
  
-@@ -146,8 +223,8 @@
+@@ -146,8 +243,8 @@
          w13_w, w13_s = reorder_w1w3_to_w3w1(
              layer.w13_weight.data, layer.w13_weight_scale_inv.data
          )
@@ -142,14 +167,14 @@
  
          log_info_on_rank0(
              logger,
-@@ -221,21 +298,24 @@
+@@ -221,21 +318,24 @@
                      shuffle_matrix_sf_a(w2_scale[i].view(torch.uint8), epilogue_tile_m)
                  )
  
 -        layer.w13_weight = Parameter(torch.stack(g1_w), requires_grad=False)
 -        layer.w13_weight_scale_inv = Parameter(
-+        _rebind(layer, "w13_weight", torch.stack(g1_w))
-+        _rebind(
++        self._install_kernel_layout(layer, "w13_weight", torch.stack(g1_w))
++        self._install_kernel_layout(
 +            layer,
 +            "w13_weight_scale_inv",
              torch.stack(g1_s)
@@ -159,8 +184,8 @@
          )
 -        layer.w2_weight = Parameter(torch.stack(g2_w), requires_grad=False)
 -        layer.w2_weight_scale_inv = Parameter(
-+        _rebind(layer, "w2_weight", torch.stack(g2_w))
-+        _rebind(
++        self._install_kernel_layout(layer, "w2_weight", torch.stack(g2_w))
++        self._install_kernel_layout(
 +            layer,
 +            "w2_weight_scale_inv",
              torch.stack(g2_s)
