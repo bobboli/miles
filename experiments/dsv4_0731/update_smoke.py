@@ -10,7 +10,7 @@ node with no trainer, no quantizer and no miles code in the path — and the cyc
 becomes twenty-five minutes on four GPUs.
 
 Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``,
-``MOE_BACKEND``, ``UPDATE_SELECTOR``, ``MEMORY_CYCLE`` and ``TRANSPORT``.
+``MOE_BACKEND``, ``UPDATE_SELECTOR``, ``MEMORY_CYCLE``, ``TRANSPORT`` and ``BUCKET_BYTES``.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ PROMPTS = [
     "Complete the sentence with one word: the sky is",
 ]
 MAX_NEW_TOKENS = 1024
+BUCKET_BYTES = int(os.environ.get("BUCKET_BYTES", 256 << 20))
 
 
 def render(tokenizer) -> list[str]:
@@ -64,6 +65,24 @@ def report(engine, prompts: list[str], label: str) -> int:
     print("-" * 72)
     print(f"{label}: {truncated}/{len(PROMPTS)} ran to the token limit")
     return truncated
+
+
+def batched(named, budget: int):
+    """Split a shard into buckets of roughly *budget* bytes, as the rollout does.
+
+    A whole shard at once needs its own copy on the device beside the engine's
+    weights and pool, which does not fit. The rollout sizes its buckets by
+    ``--update-weight-buffer-size`` for the same reason.
+    """
+    batch, size = [], 0
+    for name, tensor in named:
+        batch.append((name, tensor))
+        size += tensor.numel() * tensor.element_size()
+        if size >= budget:
+            yield batch
+            batch, size = [], 0
+    if batch:
+        yield batch
 
 
 def send(engine, named: list[tuple[str, torch.Tensor]]) -> None:
@@ -106,7 +125,7 @@ def identity_update(engine, model: str, selector: str) -> None:
     """
     shards = sorted(glob.glob(os.path.join(model, "*.safetensors")))
     transport = os.environ.get("TRANSPORT", "bucket")
-    print(f"identity update over {len(shards)} shards, selector={selector!r}, transport={transport}")
+    print(f"identity update over {len(shards)} shards, selector={selector!r}, transport={transport}, bucket={BUCKET_BYTES >> 20} MiB")
     engine.begin_weight_update()
     sent = 0
     for index, shard in enumerate(shards):
@@ -116,9 +135,9 @@ def identity_update(engine, model: str, selector: str) -> None:
                 for name in handle.keys()
                 if selector in name
             ]
-        if named:
-            send(engine, named)
-            sent += len(named)
+        for batch in batched(named, BUCKET_BYTES):
+            send(engine, batch)
+            sent += len(batch)
         if index % 8 == 0 or index == len(shards) - 1:
             print(f"  shard {index + 1}/{len(shards)}, {sent} tensors sent")
         del named
