@@ -345,6 +345,14 @@ poisons them with random values, lets the update run, and compares.
 
 **All 1352 tensors compared equal. Not one `max_abs_err` line was emitted.**
 
+The checker skips some tensors silently — `_is_skip_weight_check` drops kv-cache
+scales and post-load placeholders — so the pass is only worth what it covers.
+Auditing the reported list: 1442 names on one rank, of which 619 attention, 301
+routed expert, 86 shared expert, 86 dense, and the rest buffers. The four
+kernel-layout parameters appear for every one of the 43 layers,
+`mlp.experts.{w13_weight, w2_weight, w13_weight_scale_inv, w2_weight_scale_inv}`,
+172 entries in all. Nothing relevant was skipped, so the pass is real.
+
 The run then reproduced the failure it was sent to explain, on weights it had
 just certified:
 
