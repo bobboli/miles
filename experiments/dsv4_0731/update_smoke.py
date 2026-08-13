@@ -9,8 +9,8 @@ invisible. If generation degrades across it, the whole failure reproduces on one
 node with no trainer, no quantizer and no miles code in the path — and the cycle
 becomes twenty-five minutes on four GPUs.
 
-Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``
-and ``MOE_BACKEND``.
+Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``,
+``MOE_BACKEND`` and ``UPDATE_SELECTOR``.
 """
 
 from __future__ import annotations
@@ -63,17 +63,28 @@ def report(engine, prompts: list[str], label: str) -> int:
     return truncated
 
 
-def identity_update(engine, model: str) -> None:
-    """Hand the model back the tensors it was loaded from, shard by shard."""
+def identity_update(engine, model: str, selector: str) -> None:
+    """Hand the model back the tensors it was loaded from, shard by shard.
+
+    Only the parameters *selector* names are sent. The attention scales cannot
+    take part: the first load reshapes them, so their own checkpoint bytes no
+    longer fit the parameter they came from, and a second load asserts. The
+    routed experts are what phase 2 changes and what this needs to exercise.
+    """
     shards = sorted(glob.glob(os.path.join(model, "*.safetensors")))
-    print(f"identity update over {len(shards)} shards")
+    print(f"identity update over {len(shards)} shards, selector={selector!r}")
     engine.begin_weight_update()
     sent = 0
     for index, shard in enumerate(shards):
         with safe_open(shard, framework="pt", device="cpu") as handle:
-            named = [(name, handle.get_tensor(name)) for name in handle.keys()]
-        engine.update_weights_from_tensor(named, flush_cache=False)
-        sent += len(named)
+            named = [
+                (name, handle.get_tensor(name))
+                for name in handle.keys()
+                if selector in name
+            ]
+        if named:
+            engine.update_weights_from_tensor(named, flush_cache=False)
+            sent += len(named)
         if index % 8 == 0 or index == len(shards) - 1:
             print(f"  shard {index + 1}/{len(shards)}, {sent} tensors sent")
         del named
@@ -104,7 +115,7 @@ def main() -> None:
 
     prompts = render(engine.tokenizer_manager.tokenizer)
     before = report(engine, prompts, "before update")
-    identity_update(engine, model)
+    identity_update(engine, model, os.environ.get("UPDATE_SELECTOR", ".ffn.experts."))
     after = report(engine, prompts, "after update")
 
     print("=" * 72)
