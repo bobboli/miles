@@ -34,7 +34,7 @@ PROMPTS = [
     "Complete the sentence with one word: the sky is",
 ]
 MAX_NEW_TOKENS = 1024
-BUCKET_BYTES = int(os.environ.get("BUCKET_BYTES", 256 << 20))
+BUCKET_BYTES = int(os.environ.get("BUCKET_BYTES", 64 << 20))
 
 
 def render(tokenizer) -> list[str]:
@@ -110,9 +110,11 @@ def send(engine, named: list[tuple[str, torch.Tensor]]) -> None:
         load_format="flattened_bucket",
         flush_cache=False,
     )
-    # The exporting storage has to outlive every importer's use of the handle.
+    # The exporting storage has to outlive every importer's use of the handle,
+    # and this process shares its GPU with a worker, so give the block back.
     torch.cuda.synchronize()
     del payload, bucket
+    torch.cuda.empty_cache()
 
 
 def identity_update(engine, model: str, selector: str) -> None:
