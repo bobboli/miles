@@ -128,8 +128,11 @@ def identity_update(engine, model: str, selector: str) -> None:
     shards = sorted(glob.glob(os.path.join(model, "*.safetensors")))
     transport = os.environ.get("TRANSPORT", "bucket")
     print(f"identity update over {len(shards)} shards, selector={selector!r}, transport={transport}, bucket={BUCKET_BYTES >> 20} MiB")
-    engine.begin_weight_update()
+    # Imported buffers accumulate until the window closes, and this process
+    # shares its GPU with a worker, so the window closes every few shards.
+    shards_per_window = int(os.environ.get("SHARDS_PER_WINDOW", "4"))
     sent = 0
+    engine.begin_weight_update()
     for index, shard in enumerate(shards):
         with safe_open(shard, framework="pt", device="cpu") as handle:
             named = [
@@ -140,10 +143,13 @@ def identity_update(engine, model: str, selector: str) -> None:
         for batch in batched(named, BUCKET_BYTES):
             send(engine, batch)
             sent += len(batch)
-        if index % 8 == 0 or index == len(shards) - 1:
-            print(f"  shard {index + 1}/{len(shards)}, {sent} tensors sent")
         del named
-    engine.end_weight_update()
+        closing = (index + 1) % shards_per_window == 0 or index == len(shards) - 1
+        if closing:
+            engine.end_weight_update()
+            print(f"  shard {index + 1}/{len(shards)}, {sent} tensors sent, window closed")
+            if index != len(shards) - 1:
+                engine.begin_weight_update()
     torch.cuda.synchronize()
     print(f"identity update complete, {sent} tensors")
 

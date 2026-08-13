@@ -41,6 +41,7 @@ export MEMORY_CYCLE="${MEMORY_CYCLE:-1}"
 export TRANSPORT="${TRANSPORT:-bucket}"
 export BUCKET_BYTES="${BUCKET_BYTES:-67108864}"
 export MEM_FRACTION="${MEM_FRACTION:-0.45}"
+export SHARDS_PER_WINDOW="${SHARDS_PER_WINDOW:-4}"
 
 echo "job=${SLURM_JOB_ID} model=${model} fp4_experts=${fp4_experts} moe_backend=${moe_backend} patches=${SGLANG_PATCH_FILE:-none} selector=${UPDATE_SELECTOR} memory_cycle=${MEMORY_CYCLE} transport=${TRANSPORT}"
 
