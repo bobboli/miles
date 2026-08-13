@@ -433,7 +433,28 @@ What the reasoning missed is that the control and the failing runs differ by
 more than a weight update. The one-node smoke served **stock** SGLang; every
 phase 2 run carries three patches. If one of those breaks the *initial* load,
 the model is wrong from its first rollout and "it only breaks after an update"
-was never established. That comparison has not been made.
+was never established.
+
+### 456107 — the patches do not change the initial load
+
+The same one-node smoke, carrying all three patches, no weight update: identical
+outputs to the unpatched 444087, the same token counts (26, 45, 22, 124), 0/4
+truncated. Locally the same holds at finer grain — building the kernel layout
+from identical inputs gives byte-identical results with and without the patch,
+on all four parameters.
+
+So the patches are exonerated, and four things now hold together:
+
+- serving works, patched and unpatched;
+- the weights after an update compare equal, all 1352 of them;
+- the kernel-layout addresses now hold across an update;
+- serving after an update still answers nothing.
+
+Whatever breaks is rebuilt by the update, is not a parameter, and is not an
+address. That is a narrow enough description to be worth attacking directly —
+but every iteration so far has cost an eight-node run of about an hour, and the
+next step should be a one-node harness that performs an update against itself
+so the cycle costs twenty-five minutes on four GPUs instead.
 
 ### What phase 2 changes besides the experts
 
