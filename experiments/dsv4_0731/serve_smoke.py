@@ -16,13 +16,17 @@ import os
 
 import sglang
 
+from miles.utils.chat_template_utils import deepseek
+
 PROMPTS = [
     "What is 2 + 2? Reply with only the number.",
     "Name the capital of France. Reply with only the city name.",
     "Compute 17 * 3. Reply with only the number.",
     "Complete the sentence with one word: the sky is",
 ]
-MAX_NEW_TOKENS = 128
+# Thinking mode is on, so a healthy answer still spends tokens reasoning;
+# this only has to be generous enough that finishing is the normal outcome.
+MAX_NEW_TOKENS = 1024
 
 
 def main() -> None:
@@ -45,12 +49,15 @@ def main() -> None:
         log_level="info",
     )
 
+    # The release checkpoint ships no chat template; the rollout renders these
+    # through DeepSeek's own encoder, so this does too.
     tokenizer = engine.tokenizer_manager.tokenizer
+    print(f"chat template family: {deepseek.model_type(tokenizer)}")
     prompts = [
-        tokenizer.apply_chat_template(
+        deepseek.apply_chat_template(
             [{"role": "user", "content": prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
+            tokenizer,
+            thinking_mode="thinking",
         )
         for prompt in PROMPTS
     ]
