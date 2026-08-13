@@ -654,6 +654,42 @@ imported tensor and calls `gc.collect()` and `torch.cuda.ipc_collect()` per
 bucket, the trainer releases `long_live_tensors` before `update_weights()`
 returns, and the comparison runs after that. It compares equal.
 
+### 460099 — what the broken rollout actually generates
+
+Every judgement of "broken" so far came from aggregates. `--save-debug-rollout-data`
+keeps the samples, and `read_rollout_dump.py` reads them. The shape settles two
+questions that no aggregate could.
+
+```
+[0] reward=0  4284 tokens   'equal' x3908 of 4069 (96%)
+    HEAD  " about the solution for a form $AD$ and $AB $ -E$ and $A can is the
+           answer to the problem. In the point $ = the $ = and the answer to ..."
+    TAIL  "equal equal equal equal equal equal equal equal equal ..."
+[1] reward=0  4284 tokens   'G.' x1603 of 2065 (78%)
+[2] reward=0  4284 tokens   "$_$_$_$_$_ ..."
+```
+
+The text is not fluent, so a stop condition or a chat template is not the cause
+— the model really is producing wrong values. But it is not noise either: the
+prompt's own vocabulary survives and stays roughly in position (`$ABCD$`, `$AB$`,
+`$AD$`, "area", "line", "Answer"), and the failure is that nothing composes,
+ending in single-token collapse. Locally plausible, globally incoherent is what a
+wrong feed-forward contribution looks like on top of working attention — which
+matches attention taking the block-scaled path that 458663 proves sound.
+
+The same dump carries `rollout_routed_experts`, so the router can be checked
+directly rather than inferred:
+
+```
+[0] 1105014 picks over 256 experts, top5 covering 13%
+[1] 1105014 picks over 256 experts, top5 covering 12%
+```
+
+Every expert is used and the top five take an eighth of the traffic, against
+about a fiftieth for a perfectly flat distribution. That is ordinary mild
+concentration, not collapse. **Routing is healthy; what the experts return is
+wrong.**
+
 So the contradiction is now as sharp as the instruments can make it. The served
 bytes are identical to a fresh load, on an audited list, across all 32 ranks.
 A fresh load with those bytes answers correctly. The same bytes after an update
