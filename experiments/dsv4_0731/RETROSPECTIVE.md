@@ -39,6 +39,13 @@ would have produced wrong numbers rather than an error:
 
 Only the first announced itself, and only because we added an artifact check.
 
+**And one of them defeated the check we built for it.** Rebuilding the MXFP4
+kernel layout allocated fresh tensors each time, so the CUDA graphs captured at
+startup went on reading the addresses they had recorded. Every Python-visible
+view held the new weights; the kernel read the old ones. A post-update
+comparison of all 1352 tensors passed — it compared what `named_parameters()`
+describes, and the defect lived in what it does not.
+
 **The instruments lied.** `torch.cuda.memory_allocated` reported 164 GiB while
 the driver reported 83 GiB in use, because the memory saver releases pages and
 keeps the bookkeeping. Anyone debugging memory from allocator statistics — which
@@ -75,29 +82,39 @@ Ordered by what would have saved the most time here.
    parameters byte for byte would have caught all three MXFP4 defects in
    minutes. We ended up building that comparison by hand, once per defect,
    after each had already cost a full run.
-2. **Make numeric hand-over failures loud.** The converter now raises; the
+2. **Keep a control that does not contain the change under test.** The byte
+   comparison above passed while the model answered nothing, because it compared
+   what Python could see and the kernel read an address the comparison never
+   named. What separated the two was serving the checkpoint on one node with no
+   weight update at all — eighteen minutes, one node, and it should have been
+   the first thing run after phase 2 first failed. Instead three eight-node runs
+   went into narrowing a hypothesis the control would have discarded outright.
+   A test that exercises your change tells you whether it does what you meant;
+   only a control tells you whether what you meant was the problem.
+3. **Make numeric hand-over failures loud.** The converter now raises; the
    update path should too. `--check-weight-update-equal` was switched off for
    phase 2 because it does not model kernel layouts — that is the wrong
    direction. It should understand them.
-3. **Report `mem_get_info` wherever allocator statistics are reported**, at
+4. **Report `mem_get_info` wherever allocator statistics are reported**, at
    least while the memory saver is on. The two numbers differing by 80 GiB with
    no warning is a trap.
-4. **Make the watchdog report throughput.** "No progress for 300 s" should carry
+5. **Make the watchdog report throughput.** "No progress for 300 s" should carry
    what the rollout's token rate had been doing for the preceding minutes. The
    distinction between a stall and a slowdown was only recoverable by comparing
    `perf/rollout_time` across jobs afterwards.
-5. **Pin each phase's environment in the repository** and have the launcher
+6. **Pin each phase's environment in the repository** and have the launcher
    source it, so no run silently takes defaults.
-6. **Upstream the three SGLang patches, or pin the image digest.** Today the
+7. **Upstream the three SGLang patches, or pin the image digest.** Today the
    experiment is one image refresh from failing in a way that looks unrelated.
-7. **Reproduce the throughput collapse on demand.** It is the one open failure,
+8. **Reproduce the throughput collapse on demand.** It is the one open failure,
    it did not appear in 431471, and nothing yet explains why 427089's third
    rollout took 1001 s when its first two took 235 s.
 
 ## Still open
 
-- Phase 2 has produced no mismatch number. Its weight hand-over works; its
-  rollout has never finished a step.
+- Phase 2 has produced no usable mismatch number. Its hand-over is correct and
+  its serving path is correct; the run that tests the CUDA-graph fix is the
+  first that could produce one.
 - The throughput collapse is not root-caused, and the three causes proposed so
   far were all wrong.
 - `SKIP_SAVING` has been `1` throughout. No run here has exercised checkpoint
