@@ -10,7 +10,7 @@ node with no trainer, no quantizer and no miles code in the path — and the cyc
 becomes twenty-five minutes on four GPUs.
 
 Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``,
-``MOE_BACKEND``, ``UPDATE_SELECTOR`` and ``MEMORY_CYCLE``.
+``MOE_BACKEND``, ``UPDATE_SELECTOR``, ``MEMORY_CYCLE`` and ``TRANSPORT``.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ import sglang
 import torch
 from safetensors import safe_open
 from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+from sglang.srt.utils import MultiprocessingSerializer
+from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
 
 from miles.utils.chat_template_utils import deepseek
 
@@ -64,6 +66,36 @@ def report(engine, prompts: list[str], label: str) -> int:
     return truncated
 
 
+def send(engine, named: list[tuple[str, torch.Tensor]]) -> None:
+    """Hand a batch of tensors over the transport phase 2 uses, or the plain one.
+
+    The rollout path does not pass tensors: it flattens each batch into one
+    buffer, shares it over CUDA IPC, and lets every rank reconstruct views into
+    it. That is a different set of lifetimes from a plain hand-off, so it is
+    worth being able to exercise either.
+    """
+    if os.environ.get("TRANSPORT", "bucket") != "bucket":
+        engine.update_weights_from_tensor(named, flush_cache=False)
+        return
+
+    bucket = FlattenedTensorBucket(
+        named_tensors=[(name, tensor.cuda()) for name, tensor in named]
+    )
+    payload = {
+        "flattened_tensor": bucket.get_flattened_tensor(),
+        "metadata": bucket.get_metadata(),
+    }
+    serialized = MultiprocessingSerializer.serialize(payload, output_str=True)
+    engine.update_weights_from_tensor(
+        [serialized] * engine.server_args.tp_size,
+        load_format="flattened_bucket",
+        flush_cache=False,
+    )
+    # The exporting storage has to outlive every importer's use of the handle.
+    torch.cuda.synchronize()
+    del payload, bucket
+
+
 def identity_update(engine, model: str, selector: str) -> None:
     """Hand the model back the tensors it was loaded from, shard by shard.
 
@@ -73,7 +105,8 @@ def identity_update(engine, model: str, selector: str) -> None:
     routed experts are what phase 2 changes and what this needs to exercise.
     """
     shards = sorted(glob.glob(os.path.join(model, "*.safetensors")))
-    print(f"identity update over {len(shards)} shards, selector={selector!r}")
+    transport = os.environ.get("TRANSPORT", "bucket")
+    print(f"identity update over {len(shards)} shards, selector={selector!r}, transport={transport}")
     engine.begin_weight_update()
     sent = 0
     for index, shard in enumerate(shards):
@@ -84,7 +117,7 @@ def identity_update(engine, model: str, selector: str) -> None:
                 if selector in name
             ]
         if named:
-            engine.update_weights_from_tensor(named, flush_cache=False)
+            send(engine, named)
             sent += len(named)
         if index % 8 == 0 or index == len(shards) - 1:
             print(f"  shard {index + 1}/{len(shards)}, {sent} tensors sent")
