@@ -479,6 +479,36 @@ transport — phase 2 delivers weights as flattened buckets over CUDA IPC, not a
 plain tensors — and the non-expert parameters, which phase 2 also updates and
 the reproducer cannot send from the checkpoint.
 
+### The transport variant did not get a verdict
+
+Five further runs (456275, 456340, 456409, 456493, 456568, 456670) tried to send
+the identity update over flattened buckets and CUDA IPC. Every one died in the
+harness rather than in the system under test: a whole shard per bucket did not
+fit, then 256 MiB buckets did not, then the allocator held each bucket after
+sending, then closing the update window every four shards still reached only
+shard 32 of 48, and one run asserted because `release_memory_occupation`
+requires an idle server that `generate` had not yet drained.
+
+The cause is structural. The reproducer builds its buckets in the same process
+that hosts a TP worker, so exporter and importer compete for one GPU; the
+rollout never does this, because trainer and engine are separate processes that
+negotiate their split. Tuning around that consumed seven runs and produced no
+experimental result, which is the same mistake as before in a new place: a probe
+that only runs at full scale needs a full-scale run to expose each of its own
+defects.
+
+One real observation survives, independent of whether the reproducer ever runs:
+**imported IPC buffers accumulate for the lifetime of a begin/end window and are
+released only when it closes.** With 64 MiB buckets the run reached four times
+as many shards as with 256 MiB, so what accumulates is the total bytes in flight,
+not the number of handles. This also corrects the reading of the earlier
+configuration sweep, which took "smaller buckets, fewer steps" as evidence of
+per-handle accumulation; the memory does not accumulate per handle.
+
+Next, and not by tuning this further: either give the reproducer its own GPU for
+staging, or go back to the eight-node path with a specific diagnostic rather than
+a general one.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
