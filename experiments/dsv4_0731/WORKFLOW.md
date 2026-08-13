@@ -115,9 +115,18 @@ independent, in this order:
    `validate_mxfp4_quantize.py` re-encodes real checkpoint tensors and compares
    against the bytes they came from. Both run in about a minute on one GPU.
 
+7. **Serve without the change before blaming the change.** `serve_smoke.sbatch`
+   runs one engine's worth of GPUs on the rollout checkpoint with no weight
+   update and no patch applied, and prints what four fixed prompts generate.
+   Eighteen minutes on one node. It is what finally separated "the weights are
+   wrong" from "the weights are right and the kernel reads elsewhere", after
+   three eight-node runs had gone into the first reading.
+
 Rule of thumb: a conversion step that can fail silently needs an artifact check,
 because "the job exited 0" says nothing about the bytes. A hand-over that can
 fail silently needs to be exercised twice, because the first time never fails.
+And a check that only describes what Python can see will pass on a model that
+answers nothing, so keep one run that does not contain the change at all.
 
 ## Syncing code to the cluster
 
