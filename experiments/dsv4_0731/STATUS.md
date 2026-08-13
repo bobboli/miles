@@ -417,6 +417,24 @@ for addresses.
 The fix keeps the kernel-layout storage and copies each rebuild into it.
 `validate_mxfp4_hot_reload.py` now asserts the addresses hold, and they do.
 
+### 454574 — the address fix changes nothing
+
+| | 454574 (addresses stable) | 440119 | 433028 |
+|---|---:|---:|---:|
+| `rollout/raw_reward` | 0.0 | 0.0 | 0.0 |
+| `rollout/truncated_ratio` | 1.000 | 0.988 | 0.996 |
+| `train_rollout_kl` | 0.3533 | 0.3258 | 0.3347 |
+
+The instability was real and the fix does what it claims, but it is not the
+cause. Add it to the list of measured refutations rather than treating it as
+progress.
+
+What the reasoning missed is that the control and the failing runs differ by
+more than a weight update. The one-node smoke served **stock** SGLang; every
+phase 2 run carries three patches. If one of those breaks the *initial* load,
+the model is wrong from its first rollout and "it only breaks after an update"
+was never established. That comparison has not been made.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:

@@ -6,8 +6,10 @@
 # possibilities this job separates: the MXFP4 serving path is already degenerate
 # before any weight update, or it only becomes so afterwards.
 #
-# No weight update happens here and no SGLang patch is applied, so this is the
-# control: stock SGLang, the checkpoint as shipped, one engine's worth of GPUs.
+# No weight update happens here. With SGLANG_PATCH_FILE empty this is the
+# control — stock SGLang, the checkpoint as shipped, one engine's worth of GPUs.
+# Setting it to the patches a run carries answers the other half: whether those
+# patches already change what the initial load serves.
 #SBATCH --job-name=miles-dsv4-serve-smoke
 #SBATCH --output=/scratch/fsw/portfolios/coreai/projects/coreai_devtech_all/users/lbo/dsv4_flash_rl/logs/%x-%j.log
 #SBATCH --nodes=1
@@ -38,8 +40,9 @@ moe_backend=${SGLANG_MOE_RUNNER_BACKEND:-flashinfer_mxfp4}
 export MODEL="/workspace/data/models/${model}"
 export FP4_EXPERTS="${fp4_experts}"
 export MOE_BACKEND="${moe_backend}"
+export SGLANG_PATCH_FILE="${SGLANG_PATCH_FILE:-}"
 
-echo "job=${SLURM_JOB_ID} model=${model} fp4_experts=${fp4_experts} moe_backend=${moe_backend}"
+echo "job=${SLURM_JOB_ID} model=${model} fp4_experts=${fp4_experts} moe_backend=${moe_backend} patches=${SGLANG_PATCH_FILE:-none}"
 
 srun \
   --container-image=radixark/miles:latest \
@@ -55,5 +58,12 @@ srun \
     export SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1
     export SGLANG_OPT_FP8_WO_A_GEMM=0
     export SGLANG_DG_CACHE_DIR_PER_PROCESS=1
+    for patch_file in ${SGLANG_PATCH_FILE}; do
+      patch --batch --forward -p1 -d /sgl-workspace/sglang <"${patch_file}"
+      for target in $(awk "/^\+\+\+ /{ sub(/^b\//, \"\", \$2); print \$2 }" "${patch_file}"); do
+        python3 -m py_compile "/sgl-workspace/sglang/${target}"
+        echo "verified patched SGLang source: ${target}"
+      done
+    done
     python3 /workspace/miles/experiments/dsv4_0731/serve_smoke.py
   '
