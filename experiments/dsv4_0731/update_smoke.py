@@ -10,7 +10,7 @@ node with no trainer, no quantizer and no miles code in the path — and the cyc
 becomes twenty-five minutes on four GPUs.
 
 Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``,
-``MOE_BACKEND`` and ``UPDATE_SELECTOR``.
+``MOE_BACKEND``, ``UPDATE_SELECTOR`` and ``MEMORY_CYCLE``.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import os
 import sglang
 import torch
 from safetensors import safe_open
+from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.utils.chat_template_utils import deepseek
 
@@ -115,7 +116,23 @@ def main() -> None:
 
     prompts = render(engine.tokenizer_manager.tokenizer)
     before = report(engine, prompts, "before update")
+
+    # The rollout engine gives its memory back while training runs and takes it
+    # again around the update, in this order. Weights return before the update
+    # so it has somewhere to land; the KV cache returns after.
+    cycle = os.environ.get("MEMORY_CYCLE", "1") == "1"
+    if cycle:
+        print("release_memory_occupation()")
+        engine.release_memory_occupation()
+        print(f"resume_memory_occupation(tags=[{GPU_MEMORY_TYPE_WEIGHTS}])")
+        engine.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+
     identity_update(engine, model, os.environ.get("UPDATE_SELECTOR", ".ffn.experts."))
+
+    if cycle:
+        print(f"resume_memory_occupation(tags=[{GPU_MEMORY_TYPE_KV_CACHE}])")
+        engine.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_KV_CACHE])
+
     after = report(engine, prompts, "after update")
 
     print("=" * 72)

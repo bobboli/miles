@@ -37,8 +37,9 @@ export FP4_EXPERTS="${fp4_experts}"
 export MOE_BACKEND="${moe_backend}"
 export SGLANG_PATCH_FILE="${SGLANG_PATCH_FILE:-}"
 export UPDATE_SELECTOR="${UPDATE_SELECTOR:-.ffn.experts.}"
+export MEMORY_CYCLE="${MEMORY_CYCLE:-1}"
 
-echo "job=${SLURM_JOB_ID} model=${model} fp4_experts=${fp4_experts} moe_backend=${moe_backend} patches=${SGLANG_PATCH_FILE:-none} selector=${UPDATE_SELECTOR}"
+echo "job=${SLURM_JOB_ID} model=${model} fp4_experts=${fp4_experts} moe_backend=${moe_backend} patches=${SGLANG_PATCH_FILE:-none} selector=${UPDATE_SELECTOR} memory_cycle=${MEMORY_CYCLE}"
 
 srun \
   --container-image=radixark/miles:latest \
