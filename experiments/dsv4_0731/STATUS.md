@@ -602,6 +602,17 @@ One caveat this does not measure: phase 2 here serves the release experts
 **unpacked to FP8**, not packed MXFP4. That is the configuration that works; the
 packed path remains broken and is the open item below.
 
+And the bisection that reached it moved two things at once, which is worth
+stating plainly rather than reading past: unpacking the experts also forces
+`moe_runner_backend` from `flashinfer_mxfp4` to `auto`. So it separates the
+working configuration from the broken one, but it does not separate the *weights*
+from the *kernel*. Two facts point at the kernel rather than the payload: serving
+the packed checkpoint untouched works (444087, 456107), and an identity update of
+the packed experts on one node, memory cycle included, leaves generation
+unchanged (456194, 456224). What no run has yet isolated is packed weights served
+by a different MXFP4 kernel — `marlin` and `humming` both accept them
+(`fp8.py:371`, `fp8.py:378`).
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
