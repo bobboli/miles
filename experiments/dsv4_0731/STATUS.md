@@ -337,6 +337,45 @@ for byte (`validate_mxfp4_hot_reload.py`). But that second check stubs out
 before the reorder and shuffle. Whether that pass is reentrant across a restore
 is untested, and is the next thing to measure.
 
+### 440119 — the weights phase 2 serves are correct
+
+Phase 2 with `--check-weight-update-equal --check-weight-update-allow-quant-error`
+and no skip list. The checker snapshots the engine's freshly loaded weights,
+poisons them with random values, lets the update run, and compares.
+
+**All 1352 tensors compared equal. Not one `max_abs_err` line was emitted.**
+
+The run then reproduced the failure it was sent to explain, on weights it had
+just certified:
+
+| | 440119 | 433028 |
+|---|---:|---:|
+| `rollout/raw_reward` | 0.0 | 0.0 |
+| `rollout/truncated_ratio` | 0.988 | 0.996 |
+| `train_rollout_kl` | 0.3258 | 0.3347 |
+
+That covers attention, the shared expert, the dense layers *and* the routed
+experts — the MXFP4 payloads compare raw and bitwise, because
+`select_comparable_weight` only recognizes `Fp8LinearMethod` and `Fp8MoEMethod`,
+and `Mxfp4FlashinferTrtllmMoEMethod` wraps rather than subclasses them.
+
+So both remaining candidates die at once. The hand-over is correct, in the
+MXFP4 expert path and the block-scaled FP8 path alike, and phase 2's
+`raw_reward` of 0.0 with 99.6% truncation is not a weight error. Every
+hypothesis this bring-up has proposed for phase 2 has now been refuted by
+measurement.
+
+What that leaves is the compute side rather than the weight side: the TRT-LLM
+MXFP4 kernel itself, the MXFP8 activation quantization
+`flashinfer_mxfp4_moe_precision=default` performs on its inputs, or routing and
+top-k under the FP4 branch. None of these is exercised by phase 1, and none is
+touched by a weight comparison.
+
+One limit worth stating: the check compares the updated weights against the
+engine's *own* initial load. It cannot see an error that is already present in
+that load. SGLang serving this checkpoint normally is well-trodden, so this is
+unlikely, but it is not excluded by this run.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
