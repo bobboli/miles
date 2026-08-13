@@ -535,6 +535,35 @@ Rollout takes twice as long without graphs, as expected, and the model is just
 as broken. Twelve hypotheses have now been refuted by measurement, three of them
 proposed and implemented by this work.
 
+### 457348 — dequantizing the experts fixes everything
+
+`SGLANG_DSV4_FP4_DEQUANT=1` unpacks the release checkpoint's routed experts into
+FP8 during load, so every parameter takes the block-scaled FP8 hand-over and none
+of the MXFP4 work participates. `moe_runner_backend` must be `auto`
+(`fp8.py:366` asserts it), and the updater has to send FP8 rather than packed
+payloads — 457280 died on exactly that, `size of tensor a (4096) must match
+tensor b (2048)`, the packing factor.
+
+| | 457348 (dequant) | broken phase 2 | phase 1 |
+|---|---:|---:|---:|
+| `rollout/raw_reward` | **0.742** | 0.0 | 0.51–0.59 |
+| `rollout/truncated_ratio` | **0.258** | 0.988–1.000 | 0.258 (0731 baseline) |
+| `rollout/response_lengths` | 2270 | 4087 | — |
+| `train_rollout_kl` | **0.00560** | 0.326–0.432 | 0.00755–0.00817 |
+| `train_rollout_logprob_abs_diff` | 0.0398 | 0.450 | 0.0484 |
+| `perf/rollout_time` | 64.8 s | — | 233 s |
+
+Every number is healthy, and the mismatch is *lower* than phase 1's. So the
+block-scaled FP8 hand-over is sound, and the defect is in the MXFP4 expert path.
+
+That collides with the weight check head-on. After an MXFP4 update all 1442
+tensors compare equal to a fresh load, on an audited list that includes all four
+kernel-layout parameters for every layer — and the model still answers nothing.
+Both cannot be explained by the weight values, so what differs has to be
+something the MXFP4 path establishes on its first `process_weights_after_loading`
+and does not re-establish on the next: state outside `named_parameters()` that
+the FP8 path either does not have or rebuilds correctly.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
