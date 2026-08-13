@@ -613,6 +613,21 @@ unchanged (456194, 456224). What no run has yet isolated is packed weights serve
 by a different MXFP4 kernel — `marlin` and `humming` both accept them
 (`fp8.py:371`, `fp8.py:378`).
 
+Neither substitute is usable, and checking that cost a run it should not have.
+459149 asked for `marlin` and spent 45 minutes reaching
+`RuntimeError: MXFP4 Marlin requires SM90 or SM120` — GB200 is SM100, and one
+minute of reading in the image would have said so. `humming` has no arch guard
+but also no `restore_load_layout`, so a second load would write into the layout
+its `process_weights_after_loading` already transformed — the same defect this
+work fixed for the FlashInfer path, which makes it a confounded control rather
+than a clean one.
+
+So the kernel and the payload cannot be separated by swapping backends on this
+hardware. What remains untried is the other axis: the one-node reproducer runs
+`ep_size=4` and passes, the failing runs are `ep_size=32`. Expert parallelism is
+the one dimension where a correct per-rank weight comparison and a wrong global
+result are not contradictory.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
