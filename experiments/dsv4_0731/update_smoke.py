@@ -130,7 +130,7 @@ def identity_update(engine, model: str, selector: str) -> None:
     print(f"identity update over {len(shards)} shards, selector={selector!r}, transport={transport}, bucket={BUCKET_BYTES >> 20} MiB")
     # Imported buffers accumulate until the window closes, and this process
     # shares its GPU with a worker, so the window closes every few shards.
-    shards_per_window = int(os.environ.get("SHARDS_PER_WINDOW", "4"))
+    shards_per_window = int(os.environ.get("SHARDS_PER_WINDOW", "2"))
     sent = 0
     engine.begin_weight_update()
     for index, shard in enumerate(shards):
@@ -169,7 +169,7 @@ def main() -> None:
         moe_runner_backend=os.environ["MOE_BACKEND"],
         # The bucket is built in this process while a worker holds the same GPU,
         # so the engine has to leave room the rollout would not need to.
-        mem_fraction_static=float(os.environ.get("MEM_FRACTION", "0.45")),
+        mem_fraction_static=float(os.environ.get("MEM_FRACTION", "0.35")),
         kv_cache_dtype="fp8_e4m3",
         page_size=256,
         skip_server_warmup=True,

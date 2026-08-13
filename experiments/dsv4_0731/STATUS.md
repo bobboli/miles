@@ -623,10 +623,26 @@ work fixed for the FlashInfer path, which makes it a confounded control rather
 than a clean one.
 
 So the kernel and the payload cannot be separated by swapping backends on this
-hardware. What remains untried is the other axis: the one-node reproducer runs
-`ep_size=4` and passes, the failing runs are `ep_size=32`. Expert parallelism is
-the one dimension where a correct per-rank weight comparison and a wrong global
-result are not contradictory.
+hardware.
+
+Expert parallelism looked like the remaining axis — a correct per-rank weight
+comparison and a wrong global result are not contradictory if experts land on
+the wrong rank — but the logs refute it for free: the failing 454574 and the
+working 458663 both run `tp_size=4, ep_size=4`, the same topology the one-node
+reproducer uses.
+
+Crossing off what the working run and the reproducer between them already cover
+leaves exactly one untested cell:
+
+| | packed MXFP4 | unpacked FP8 |
+|---|---|---|
+| plain tensor hand-off | 456194, 456224 — pass | — |
+| flattened bucket over IPC | **never run** | 458663 — pass |
+
+Non-expert parameters, the bucket transport, the trained-weight payload and the
+topology are each exercised by a run that works. The combination of the bucket
+transport with packed MXFP4 experts is the one thing only the failing runs do,
+and the reproducer's attempt at it never survived its own memory footprint.
 
 ### What phase 2 changes besides the experts
 
