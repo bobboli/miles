@@ -184,6 +184,10 @@ def main() -> None:
     # so it has somewhere to land; the KV cache returns after.
     cycle = os.environ.get("MEMORY_CYCLE", "1") == "1"
     if cycle:
+        # Releasing requires an idle server, and generate() returns before the
+        # scheduler has finished with the batch. The rollout pauses and flushes
+        # before its update for the same reason.
+        engine.flush_cache()
         print("release_memory_occupation()")
         engine.release_memory_occupation()
         print(f"resume_memory_occupation(tags=[{GPU_MEMORY_TYPE_WEIGHTS}])")
