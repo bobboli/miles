@@ -564,6 +564,44 @@ something the MXFP4 path establishes on its first `process_weights_after_loading
 and does not re-establish on the next: state outside `named_parameters()` that
 the FP8 path either does not have or rebuilds correctly.
 
+### 458663 — phase 2 completes four steps, COMPLETED (1 h 04 m)
+
+Same configuration as 457348 with `NUM_ROLLOUT=4`.
+
+| Step | `train_rollout_kl` | `logprob_abs_diff` | `raw_reward` | `truncated_ratio` | `rollout_time` |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.005688 | 0.03980 | 0.746 | 0.289 | 66.6 s |
+| 1 | 0.005507 | 0.04129 | 0.621 | 0.461 | 70.4 s |
+| 2 | 0.005424 | 0.04171 | 0.625 | 0.492 | 69.0 s |
+| 3 | 0.005045 | 0.03938 | 0.703 | 0.418 | 54.7 s |
+
+## The comparison
+
+Both phases train the same MXFP8 checkpoint for four steps and differ only in
+what the rollout serves.
+
+| | Phase 1 (431471) | Phase 2 (458663) |
+|---|---|---|
+| Rollout checkpoint | MXFP8, converted from the BF16 cast | the release checkpoint as shipped |
+| Routed experts | MXFP8, group 32 | packed MXFP4, unpacked to FP8 at load |
+| Everything else | MXFP8, group 32 | block-scaled FP8, `[128, 128]` |
+| `train_rollout_kl` | 0.00755 – 0.00817 | **0.00505 – 0.00569** |
+| `logprob_abs_diff` | 0.0484 – 0.0523 | **0.0394 – 0.0417** |
+| `raw_reward` | 0.512 – 0.590 | 0.621 – 0.746 |
+| `rollout_time` | 233 – 239 s | 54.7 – 70.4 s |
+| Drift over four steps | none | none |
+
+Phase 2's mismatch is about a third lower than phase 1's, and neither drifts.
+Serving the release checkpoint's own weights agrees with the trainer *better*
+than serving a checkpoint converted from the same BF16 cast — the conversion to
+MXFP8 costs more agreement than the release quantization does. Rollout is also
+three to four times faster, though that reflects the MoE runner as much as the
+weight format.
+
+One caveat this does not measure: phase 2 here serves the release experts
+**unpacked to FP8**, not packed MXFP4. That is the configuration that works; the
+packed path remains broken and is the open item below.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
