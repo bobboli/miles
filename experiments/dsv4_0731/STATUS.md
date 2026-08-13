@@ -642,7 +642,24 @@ leaves exactly one untested cell:
 Non-expert parameters, the bucket transport, the trained-weight payload and the
 topology are each exercised by a run that works. The combination of the bucket
 transport with packed MXFP4 experts is the one thing only the failing runs do,
-and the reproducer's attempt at it never survived its own memory footprint.
+and the reproducer's attempt at it never survived its own memory footprint —
+459395, with the engine cut to a 0.35 static fraction and windows closing every
+two shards, reached further than any before it and still exhausted the device.
+That route is structurally blocked: the reproducer hosts the exporting process
+and an importing worker on one GPU, which the rollout never does.
+
+The obvious mechanism for such a pairing — reconstructed views outliving the
+buffer they point into — is already excluded. The engine-side patch drops each
+imported tensor and calls `gc.collect()` and `torch.cuda.ipc_collect()` per
+bucket, the trainer releases `long_live_tensors` before `update_weights()`
+returns, and the comparison runs after that. It compares equal.
+
+So the contradiction is now as sharp as the instruments can make it. The served
+bytes are identical to a fresh load, on an audited list, across all 32 ranks.
+A fresh load with those bytes answers correctly. The same bytes after an update
+answer nothing. Topology, transport, payload and non-expert path are each shared
+with a run that works. Whatever remains is not visible to a weight comparison,
+not a tensor address, not a CUDA graph, and not the serving path in isolation.
 
 ### What phase 2 changes besides the experts
 
