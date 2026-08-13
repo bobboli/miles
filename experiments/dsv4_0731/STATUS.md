@@ -517,6 +517,24 @@ Next, and not by tuning this further: either give the reproducer its own GPU for
 staging, or go back to the eight-node path with a specific diagnostic rather than
 a general one.
 
+### 456794 — CUDA graph replay is not the mechanism either
+
+The one-node control served four prompts; the rollout serves 256 at a time, so
+the two land in different capture buckets and the control may never have
+exercised the replay path the rollout uses. Disabling graphs outright settles
+it:
+
+| | 456794 (no graphs) | 454574 | 440119 |
+|---|---:|---:|---:|
+| `rollout/raw_reward` | 0.0 | 0.0 | 0.0 |
+| `rollout/truncated_ratio` | 0.996 | 1.000 | 0.988 |
+| `train_rollout_kl` | 0.4319 | 0.3533 | 0.3258 |
+| `perf/rollout_time` | 959.8 s | — | — |
+
+Rollout takes twice as long without graphs, as expected, and the model is just
+as broken. Twelve hypotheses have now been refuted by measurement, three of them
+proposed and implemented by this work.
+
 ### What phase 2 changes besides the experts
 
 The two rollout checkpoints do not share a hand-over path:
