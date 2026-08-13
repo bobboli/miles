@@ -451,10 +451,33 @@ So the patches are exonerated, and four things now hold together:
 - serving after an update still answers nothing.
 
 Whatever breaks is rebuilt by the update, is not a parameter, and is not an
-address. That is a narrow enough description to be worth attacking directly —
-but every iteration so far has cost an eight-node run of about an hour, and the
-next step should be a one-node harness that performs an update against itself
-so the cycle costs twenty-five minutes on four GPUs instead.
+address.
+
+### 456154 / 456194 / 456224 — the update itself does not break it
+
+`update_smoke.sbatch` serves the checkpoint on one node, hands the model back
+the tensors it was loaded from, and generates on both sides. An identity update
+should be invisible, so a degradation across it would reach the whole failure in
+twenty-three minutes on four GPUs.
+
+| Run | What it added | Result |
+|---|---|---|
+| 456154 | identity update over every tensor | asserted, see below |
+| 456194 | routed experts only | 0/4 truncated before and after |
+| 456224 | plus the engine's release/resume cycle | 0/4 truncated before and after |
+
+456154 failed on `model.layers.0.self_attn.wo_b.weight_scale_inv`:
+`assert self.data.shape == loaded_weight.shape`. The first load reshapes the
+attention scales, so their own checkpoint bytes no longer fit the parameter they
+came from. That is the same second-load problem in stock SGLang, on a path this
+work does not touch; phase 2's real update does not hit it because miles sends
+scales requantized to the shape the parameter now has.
+
+So the MoE update path carrying correct data is fine, and so is the memory cycle
+around it. What remains untested between the reproducer and phase 2 is the
+transport — phase 2 delivers weights as flattened buckets over CUDA IPC, not as
+plain tensors — and the non-expert parameters, which phase 2 also updates and
+the reproducer cannot send from the checkpoint.
 
 ### What phase 2 changes besides the experts
 
