@@ -10,7 +10,7 @@ node with no trainer, no quantizer and no miles code in the path — and the cyc
 becomes twenty-five minutes on four GPUs.
 
 Configured by the environment its sbatch exports: ``MODEL``, ``FP4_EXPERTS``,
-``MOE_BACKEND``, ``UPDATE_SELECTOR``, ``MEMORY_CYCLE``, ``TRANSPORT`` and ``BUCKET_BYTES``.
+``MOE_BACKEND``, ``UPDATE_SELECTOR``, ``MEMORY_CYCLE``, ``TRANSPORT``, ``BUCKET_BYTES`` and ``MEM_FRACTION``.
 """
 
 from __future__ import annotations
@@ -159,7 +159,9 @@ def main() -> None:
         trust_remote_code=True,
         attention_backend="dsv4",
         moe_runner_backend=os.environ["MOE_BACKEND"],
-        mem_fraction_static=0.6,
+        # The bucket is built in this process while a worker holds the same GPU,
+        # so the engine has to leave room the rollout would not need to.
+        mem_fraction_static=float(os.environ.get("MEM_FRACTION", "0.45")),
         kv_cache_dtype="fp8_e4m3",
         page_size=256,
         skip_server_warmup=True,
