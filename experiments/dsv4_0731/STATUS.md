@@ -591,6 +591,14 @@ what the rollout serves.
 | `rollout_time` | 233 – 239 s | 54.7 – 70.4 s |
 | Drift over four steps | none | none |
 
+An independent reference exists for the setup itself: PR #1340, which added
+`--train-mxfp8`/`--rollout-mxfp8` in July, reported five steps at
+`kl` 0.01099–0.01120 and `abs_diff` 0.0897–0.0905 on the checkpoint that
+predates the 0731 release. All three sit in the same range and none drifts, and
+they order the way the formats do — 0.0110 for the earlier checkpoint, 0.0078
+serving a converted MXFP8 copy of the release, 0.0055 serving the release's own
+weights.
+
 Phase 2's mismatch is about a third lower than phase 1's, and neither drifts.
 Serving the release checkpoint's own weights agrees with the trainer *better*
 than serving a checkpoint converted from the same BF16 cast — the conversion to
