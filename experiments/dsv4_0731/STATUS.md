@@ -690,6 +690,12 @@ about a fiftieth for a perfectly flat distribution. That is ordinary mild
 concentration, not collapse. **Routing is healthy; what the experts return is
 wrong.**
 
+Dtype was the last thing the kernel could dispatch on that a byte comparison
+would miss — `fp8.py:1560` and the rebuild both re-view without changing bytes.
+Driving a reload on a two-expert layer and comparing dtype and shape rather than
+only bytes finds all four parameters identical: `uint8`, `uint8`,
+`float8_e4m3fn`, `float8_e4m3fn`, zero mismatches.
+
 So the contradiction is now as sharp as the instruments can make it. The served
 bytes are identical to a fresh load, on an audited list, across all 32 ranks.
 A fresh load with those bytes answers correctly. The same bytes after an update
