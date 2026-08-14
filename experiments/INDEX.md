@@ -9,6 +9,7 @@ Talos links open the same file in the browser.
 
 | Document | Why |
 |---|---|
+| [dsv4_0731/HANDOFF.md](dsv4_0731/HANDOFF.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/HANDOFF.md) | **Start here if you are picking this up.** Where both phases landed, the one bug still open and what it costs to be wrong about it, the merge requests waiting, and the format vocabulary the rest of these documents assume. |
 | [dsv4_0731/STATUS.md](dsv4_0731/STATUS.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/STATUS.md) | The current experiment. Objective, checkpoint layout, conversion, run log, mismatch numbers, and what blocks each phase. |
 | [dsv4_0731/RETROSPECTIVE.md](dsv4_0731/RETROSPECTIVE.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/RETROSPECTIVE.md) | What it took to get MXFP8 running, why it was hard, and what to change. Read this before starting similar work. |
 | [dsv4_0731/WORKFLOW.md](dsv4_0731/WORKFLOW.md) · [talos](https://sc.talos.nvidia.com/view/home/scratch.lbo_gpu_1/projects/miles/experiments/dsv4_0731/WORKFLOW.md) | How the work is done: the three tiers, which copy of each package a job actually runs, how a numeric change is validated, how code reaches the cluster. |
@@ -19,8 +20,12 @@ Two phases against `deepseek-ai/DeepSeek-V4-Flash-0731`: MXFP8 train with MXFP8
 rollout, then the same trainer against MXFP4 experts with MXFP8 activations, so
 the mismatch delta isolates the rollout weight format.
 
-Phase 1's mismatch numbers are in hand and reproduce across three runs. Phase 2
-is at its first run that gets past the weight hand-over.
+Both phases have four-step numbers. Phase 2's mismatch is about a third *below*
+phase 1's, which is the opposite of what the experiment expected — serving the
+release's own weights agrees with the trainer better than serving an MXFP8 copy
+converted from the same BF16 cast. Phase 2 reaches that by unpacking the release
+experts to FP8 at load; serving them packed is still broken after an online
+update and is the one open item.
 
 | File | Contents |
 |---|---|
@@ -37,7 +42,10 @@ Validation tools, in the order the workflow applies them:
 | [dsv4_0731/make_mini_checkpoint.py](dsv4_0731/make_mini_checkpoint.py) | Slices a shard into a one-file checkpoint so the conversion entry point runs end to end. |
 | [dsv4_0731/assert_fully_dequantized.py](dsv4_0731/assert_fully_dequantized.py) | Did any quantized payload or orphaned scale survive into the emitted artifact. |
 | [dsv4_0731/validate_mxfp4_quantize.py](dsv4_0731/validate_mxfp4_quantize.py) | Does the encoder the updater uses reproduce the checkpoint's own bytes. |
-| [dsv4_0731/validate_mxfp4_hot_reload.py](dsv4_0731/validate_mxfp4_hot_reload.py) | Does a second load — an online update — reproduce the first, byte for byte. |
+| [dsv4_0731/validate_mxfp4_hot_reload.py](dsv4_0731/validate_mxfp4_hot_reload.py) | Does a second load — an online update — reproduce the first, byte for byte, at the same address. |
+| [dsv4_0731/serve_smoke.sbatch](dsv4_0731/serve_smoke.sbatch) | What the checkpoint generates on one node with no weight update — the control the eight-node runs lacked. |
+| [dsv4_0731/update_smoke.sbatch](dsv4_0731/update_smoke.sbatch) | Whether an update against the model's own weights changes what it generates. Plain transport only; the bucket variant does not fit on one node. |
+| [dsv4_0731/read_rollout_dump.py](dsv4_0731/read_rollout_dump.py) | What a rollout actually generated, and how its expert routing was distributed. |
 
 Job scripts: [download_0731.sbatch](dsv4_0731/download_0731.sbatch),
 [prepare_0731.sbatch](dsv4_0731/prepare_0731.sbatch), and the RL launcher

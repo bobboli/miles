@@ -27,9 +27,14 @@ def mxfp4_quantize(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
     blocks = weight.float().reshape(-1, MXFP4_GROUP_SIZE)
     amax = blocks.abs().amax(dim=-1, keepdim=True)
-    # A zero block would take log2(0); the E8M0 floor is the smallest exponent
-    # the format can carry, and it encodes those blocks as all-zero anyway.
+    # E8M0 stores `exponent + E8M0_BIAS` in a byte, so an exponent below the
+    # format's floor wraps instead of saturating: a block whose largest
+    # magnitude is 1e-40 wants 2**-135, and the byte for it comes out as 248,
+    # which reads back as 2**121. Saturate at the floor, where the payload is
+    # all-zero anyway.
     exponent = torch.ceil(torch.log2(amax / E2M1_MAX).clamp(min=-float(E8M0_BIAS)))
+    # log2(0) is -inf rather than merely out of range, so a zero block cannot
+    # reach the clamp above and is pinned separately.
     exponent = torch.where(amax > 0, exponent, torch.full_like(exponent, -float(E8M0_BIAS)))
 
     scaled = blocks / torch.exp2(exponent)
