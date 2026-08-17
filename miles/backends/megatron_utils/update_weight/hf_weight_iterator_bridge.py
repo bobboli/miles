@@ -4,6 +4,8 @@ import os
 from itertools import groupby
 from pathlib import Path
 
+import torch
+
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
 
@@ -176,6 +178,11 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         weight_dict_key = f"vp_stages.{task.vp_stage}.{task.param_name}"
         if weight_dict_key not in new_weight_dict:
             # buffer-like params (Gemma-4 layer_scalar/scale) aren't in optimizer state; keep as-is
+            if isinstance(task.param_weight, torch.nn.Parameter):
+                raise KeyError(
+                    f"Bridge export parameter {weight_dict_key!r} is missing from the weight backup; "
+                    "reading the model-resident parameter would defeat train offload"
+                )
             return task
         new_param_weight = new_weight_dict[weight_dict_key]
         new_param_weight = new_param_weight.cuda()

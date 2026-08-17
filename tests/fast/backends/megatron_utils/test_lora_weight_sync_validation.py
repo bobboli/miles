@@ -24,7 +24,10 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin import (
     DistBucketedWeightUpdateMixin,
 )
-from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import (
+    UpdateWeightFromTensor,
+    _reclaim_colocated_ipc_storage,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -108,6 +111,21 @@ class TestCheckWeightSyncResults:
         ]
         with pytest.raises(RuntimeError, match="oops"):
             _check_weight_sync_results(results, is_lora=True)
+
+
+def test_reclaim_colocated_ipc_storage_releases_driver_memory():
+    with (
+        patch(f"{_UW_MODULE}.gc.collect") as collect,
+        patch(f"{_UW_MODULE}.torch.cuda.synchronize") as synchronize,
+        patch(f"{_UW_MODULE}.torch.cuda.ipc_collect") as ipc_collect,
+        patch(f"{_UW_MODULE}.torch.cuda.empty_cache") as empty_cache,
+    ):
+        _reclaim_colocated_ipc_storage()
+
+    synchronize.assert_called_once_with()
+    collect.assert_called_once_with()
+    ipc_collect.assert_called_once_with()
+    empty_cache.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------

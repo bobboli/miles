@@ -1,9 +1,12 @@
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
+import torch
 
 from miles.backends.megatron_utils.update_weight.common import AtomicUpdateGroup
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import (
+    _process_conversion_tasks,
     _select_bridge_checkpoint,
     _stream_atomic_units,
 )
@@ -16,7 +19,9 @@ def test_bridge_uses_direct_hf_trainer_seed(tmp_path):
     rollout_schema = tmp_path / "rollout-schema"
     rollout_schema.mkdir()
 
-    selected = _select_bridge_checkpoint(Namespace(load=str(trainer_seed), ref_load=str(trainer_seed), hf_checkpoint=str(rollout_schema)))
+    selected = _select_bridge_checkpoint(
+        Namespace(load=str(trainer_seed), ref_load=str(trainer_seed), hf_checkpoint=str(rollout_schema))
+    )
 
     assert selected == str(trainer_seed)
 
@@ -27,7 +32,9 @@ def test_bridge_keeps_rollout_checkpoint_for_megatron_seed(tmp_path):
     (trainer_seed / "latest_checkpointed_iteration.txt").write_text("1")
     rollout_checkpoint = tmp_path / "rollout"
 
-    selected = _select_bridge_checkpoint(Namespace(load=str(trainer_seed), ref_load=str(trainer_seed), hf_checkpoint=str(rollout_checkpoint)))
+    selected = _select_bridge_checkpoint(
+        Namespace(load=str(trainer_seed), ref_load=str(trainer_seed), hf_checkpoint=str(rollout_checkpoint))
+    )
 
     assert selected == str(rollout_checkpoint)
 
@@ -106,3 +113,24 @@ def test_stream_atomic_units_rejects_non_consecutive_source_tensors():
 
     with pytest.raises(AssertionError, match="Non-consecutive tensors"):
         list(_stream_atomic_units(items, groups))
+
+
+def test_bridge_export_rejects_missing_backed_up_parameter():
+    task = SimpleNamespace(
+        param_weight=torch.nn.Parameter(torch.ones(1)),
+        vp_stage=0,
+        param_name="decoder.weight",
+    )
+
+    with pytest.raises(KeyError, match="defeat train offload"):
+        list(_process_conversion_tasks([task], {}))
+
+
+def test_bridge_export_allows_model_resident_buffer():
+    task = SimpleNamespace(
+        param_weight=torch.ones(1),
+        vp_stage=0,
+        param_name="decoder.buffer",
+    )
+
+    assert list(_process_conversion_tasks([task], {})) == [task]

@@ -35,6 +35,14 @@ from .update_weight_from_distributed.broadcast import (
 logger = logging.getLogger(__name__)
 
 
+def _reclaim_colocated_ipc_storage() -> None:
+    """Release a completed CUDA-IPC bucket before allocating the next one."""
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.ipc_collect()
+    torch.cuda.empty_cache()
+
+
 def _pp_assemble_full_adapter(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
 ) -> list[tuple[str, torch.Tensor]]:
@@ -275,6 +283,8 @@ class UpdateWeightFromTensor:
                 # from a common collective epoch.
                 dist.barrier(group=get_gloo_group())
                 del hf_named_tensors, long_lived_tensors, refs, results
+                if getattr(self.args, "colocate", False) and getattr(self.args, "offload_train", False):
+                    _reclaim_colocated_ipc_storage()
 
             mm_tower_tensors = self._mm_tower_named_tensors()
             if mm_tower_tensors is not None:
@@ -329,18 +339,11 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         del megatron_local_weights
-        if (
-            not skip_base_sync
-            and getattr(self.args, "colocate", False)
-            and getattr(self.args, "offload_train", False)
-        ):
+        if not skip_base_sync and getattr(self.args, "colocate", False) and getattr(self.args, "offload_train", False):
             # IPC-sent allocations remain live until Python references and
             # consumer handles are both gone. Collect IPC before returning the
             # resulting inactive blocks to the CUDA driver.
-            torch.cuda.synchronize()
-            gc.collect()
-            torch.cuda.ipc_collect()
-            torch.cuda.empty_cache()
+            _reclaim_colocated_ipc_storage()
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
         """Frozen vision/audio tower tensors to append to every base sync (see
