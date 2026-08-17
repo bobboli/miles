@@ -54,6 +54,7 @@ def run_impl(args: RunArgs) -> None:
         token_ids_file=token_ids_file,
         role=args.role,
         ref_load=args.ref_load,
+        megatron_to_hf_mode=args.megatron_to_hf_mode,
         run_backward=args.run_backward,
         source_patcher_config=args.source_patcher_config,
         routing_replay_dump_path=args.routing_replay_dump_path,

@@ -19,6 +19,7 @@ class WorkerScriptArgs:
     token_ids_file: Path
     role: str = "actor"
     ref_load: Path | None = None
+    megatron_to_hf_mode: str = "raw"
     run_backward: bool = False
     source_patcher_config: Path | None = None
     routing_replay_dump_path: Path | None = None

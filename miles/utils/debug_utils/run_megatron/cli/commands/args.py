@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from typing import Literal
 
 
 def _field(
@@ -17,7 +18,11 @@ def _field(
 class CommonRunArgs:
     model_type: str = _field(help="Model type matching scripts/models/{model_type}.sh")
     hf_checkpoint: Path = _field(help="HuggingFace checkpoint path")
-    ref_load: Path | None = _field(default=None, help="Megatron checkpoint path")
+    ref_load: Path | None = _field(default=None, help="Initialization checkpoint path")
+    megatron_to_hf_mode: Literal["raw", "bridge"] = _field(
+        default="raw",
+        help="Megatron/HF parameter mapping implementation",
+    )
     sp: bool = _field(default=False, help="Enable sequence parallelism")
     run_backward: bool = _field(default=False, help="Run backward pass")
     prompt_mode: str = _field(default="math", help="Prompt mode: math / file / text")

@@ -43,7 +43,7 @@ from miles.utils.debug_utils.run_megatron.worker.top_k_print import print_top_k
 
 def main() -> None:
     args, script = _parse_args()
-    _initialize_megatron(args)
+    _initialize_megatron(args, script)
 
     rank: int = dist.get_rank()
     if rank == 0:
@@ -107,7 +107,7 @@ def main() -> None:
 
 
 def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
-    args: argparse.Namespace = parse_args(extra_args_provider=WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser)
+    args: argparse.Namespace = parse_args(extra_args_provider=_register_worker_args)
     script_args: WorkerScriptArgs = WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args)
 
     if script_args.ref_load is not None:
@@ -116,13 +116,21 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
     return args, script_args
 
 
-def _initialize_megatron(args: argparse.Namespace) -> None:
+def _register_worker_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser = WORKER_SCRIPT_ARGS_BRIDGE.register_on_parser(parser)
+    parser.add_argument("--qkv-format", choices=("thd", "bshd"), default="thd")
+    return parser
+
+
+def _initialize_megatron(args: argparse.Namespace, script: WorkerScriptArgs) -> None:
     torch.distributed.init_process_group(backend="nccl")
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
     args.hf_checkpoint = str(args.script_hf_checkpoint)
-    args.__dict__.setdefault("megatron_to_hf_mode", "raw")
+    if script.megatron_to_hf_mode not in ("raw", "bridge"):
+        raise ValueError(f"Unsupported Megatron/HF mapping mode: {script.megatron_to_hf_mode}")
+    args.megatron_to_hf_mode = script.megatron_to_hf_mode
     args.__dict__.setdefault("decrease_batch_size_if_needed", False)
     args.__dict__.setdefault("debug_deterministic_collective", False)
     set_default_megatron_args(args)
@@ -133,7 +141,11 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    model: list[Any] = get_model(
+        model_provider,
+        ModelType.encoder_or_decoder,
+        wrap_with_ddp=script.run_backward,
+    )
 
     if args.load is not None:
         load_checkpoint(

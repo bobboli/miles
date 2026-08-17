@@ -13,12 +13,13 @@ Supports:
 
 Usage patterns:
 
-  1. One-shot full pipeline (download + convert + train):
+  1. One-shot direct-HF pipeline (no offline weight conversion):
        python scripts/run_deepseek_v4.py full-train \
-           --model-name DeepSeek-V4-Flash-FP8-4layer \
-           --num-nodes 1 --num-gpus-per-node 8
+           --model-name DeepSeek-V4-Flash-0731 \
+           --init-model-source hf --rollout-weight-source trainer \
+           --num-nodes 8 --num-gpus-per-node 4
 
-  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Legacy converted-checkpoint steps (download -> BF16 -> torch_dist -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -38,6 +39,7 @@ from typing import Literal
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
 
 app = typer.Typer()
 
@@ -91,6 +93,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_eval: bool = True
 
     hf_checkpoint: str | None = None
+    # HF imports through Megatron-Bridge; torch_dist preserves the legacy
+    # offline-conversion path.
+    init_model_source: Literal["torch_dist", "hf"] = "torch_dist"
+    # trainer starts SGLang with the target layout but no checkpoint payload;
+    # the initial weight sync supplies every rollout tensor.
+    rollout_weight_source: Literal["checkpoint", "trainer"] = "checkpoint"
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     # Defaults to model_dir. Set explicitly when shared NFS -> per-node local NVMe copy is needed.
@@ -177,6 +185,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return f"{self.model_name}-MXFP8"
 
     @property
+    def mxfp8_schema_name(self):
+        return f"{self.mxfp8_name}-schema"
+
+    @property
     def rollout_name(self):
         if self.rollout_mxfp8:
             return self.mxfp8_name
@@ -223,6 +235,34 @@ def _download_dataset(args: ScriptArgs):
 def _hf_checkpoint_path(args: ScriptArgs) -> str:
     """Resolve hf_checkpoint path: explicit override wins, else {model_dir}/{model_name}."""
     return args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
+
+
+def _local_hf_checkpoint_path(args: ScriptArgs) -> str:
+    source = Path(_hf_checkpoint_path(args))
+    if args.model_local_dir == args.model_dir:
+        return str(source)
+    return str(Path(args.model_local_dir) / source.name)
+
+
+def _mxfp8_schema_path(args: ScriptArgs, *, local: bool) -> str:
+    root = args.model_local_dir if local else args.model_dir
+    return str(Path(root) / args.mxfp8_schema_name)
+
+
+def _trainer_checkpoint_path(args: ScriptArgs) -> str:
+    if args.init_model_source == "hf":
+        return _local_hf_checkpoint_path(args)
+    return str(Path(args.model_local_dir) / args.torch_dist_name)
+
+
+def _rollout_checkpoint_path(args: ScriptArgs) -> str:
+    if args.rollout_weight_source == "trainer":
+        if args.rollout_mxfp8:
+            return _mxfp8_schema_path(args, local=True)
+        return _local_hf_checkpoint_path(args)
+    if args.rollout_fp8 and args.hf_checkpoint is not None:
+        return _local_hf_checkpoint_path(args)
+    return str(Path(args.model_local_dir) / args.rollout_name)
 
 
 def _ensure_4layer_model_type(args: ScriptArgs):
@@ -290,11 +330,28 @@ def _prepare_mxfp8(args: ScriptArgs):
     )
 
 
+def _prepare_mxfp8_schema(args: ScriptArgs) -> None:
+    if args.rollout_weight_source != "trainer" or not args.rollout_mxfp8:
+        return
+    schema_path = create_mxfp8_rollout_schema(
+        source_dir=_hf_checkpoint_path(args),
+        destination_dir=_mxfp8_schema_path(args, local=False),
+    )
+    print(f"[prepare] MXFP8 metadata-only rollout schema: {schema_path}")
+
+
 @app.command()
 @U.dataclass_cli
 def prepare_mxfp8(args: ScriptArgs):
     """BF16 -> MXFP8 conversion (needs prepare-single done first). One node."""
     _prepare_mxfp8(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_mxfp8_schema(args: ScriptArgs):
+    """Create the metadata-only MXFP8 rollout layout used by trainer weight sync."""
+    _prepare_mxfp8_schema(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
@@ -360,16 +417,33 @@ def prepare_cp(args: ScriptArgs):
 
 
 def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.rollout_name}",
-        path_dst=f"{args.model_local_dir}/{args.rollout_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies: list[tuple[str, str]] = []
+    if args.init_model_source == "hf" or args.rollout_weight_source == "trainer":
+        copies.append((_hf_checkpoint_path(args), _local_hf_checkpoint_path(args)))
+    if args.init_model_source == "torch_dist":
+        copies.append(
+            (
+                str(Path(args.model_dir) / args.torch_dist_name),
+                str(Path(args.model_local_dir) / args.torch_dist_name),
+            )
+        )
+    if args.rollout_weight_source == "trainer" and args.rollout_mxfp8:
+        copies.append(
+            (
+                _mxfp8_schema_path(args, local=False),
+                _mxfp8_schema_path(args, local=True),
+            )
+        )
+    elif args.rollout_weight_source == "checkpoint":
+        copies.append(
+            (
+                str(Path(args.model_dir) / args.rollout_name),
+                str(Path(args.model_local_dir) / args.rollout_name),
+            )
+        )
+
+    for source, destination in dict.fromkeys(copies):
+        U.rsync_simple(path_src=source, path_dst=destination, num_nodes=args.num_nodes)
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -441,11 +515,12 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert _is_blackwell(args), "MXFP8 requires Blackwell (B200/B300/GB200/GB300)"
-    if not args.rollout_fp8 or args.hf_checkpoint is None:
-        rollout_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
-        if args.hf_checkpoint != rollout_checkpoint:
-            print(f"[precision] rollout checkpoint: {args.hf_checkpoint} -> {rollout_checkpoint}")
-            args.hf_checkpoint = rollout_checkpoint
+    _ensure_4layer_model_type(args)
+    rollout_checkpoint = _rollout_checkpoint_path(args)
+    trainer_checkpoint = _trainer_checkpoint_path(args)
+    print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
+    print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
+    args.hf_checkpoint = rollout_checkpoint
     print(
         f"[precision] train_fp8={args.train_fp8}, rollout_fp8={args.rollout_fp8}, "
         f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}"
@@ -455,10 +530,10 @@ def _train(args: ScriptArgs):
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
         f"{args.rollout_num_gpus} rollout GPUs, colocate={args.colocate})"
     )
-    _ensure_4layer_model_type(args)
-
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} " f"--ref-load {args.model_local_dir}/{args.torch_dist_name} "
+    ckpt_args = f"--hf-checkpoint {rollout_checkpoint} " f"--ref-load {trainer_checkpoint} "
+    if args.init_model_source == "hf":
+        ckpt_args += "--megatron-to-hf-mode bridge "
     if not args.skip_saving:
         ckpt_args += (
             f"--load {load_save_path} " f"--save {load_save_path} " "--save-interval 20 " "--save-retain-interval 20 "
@@ -605,6 +680,8 @@ def _train(args: ScriptArgs):
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
+    if args.rollout_weight_source == "trainer":
+        extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] = "1"
     if nccl_launch_order_implicit := os.environ.get("NCCL_LAUNCH_ORDER_IMPLICIT"):
         extra_env_vars["NCCL_LAUNCH_ORDER_IMPLICIT"] = nccl_launch_order_implicit
     if args.model_name == "DeepSeek-V4-Pro-FP8":
@@ -708,41 +785,48 @@ def train(args: ScriptArgs):
     _train(args)
 
 
-@app.command()
-@U.dataclass_cli
-def full_train(args: ScriptArgs):
+def _full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
 
-    bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
-    bf16_sentinel = bf16_dir / "model.safetensors.index.json"
-    if not bf16_sentinel.exists():
-        _prepare_single(args)
-    else:
-        print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
+    needs_converted_rollout = args.rollout_weight_source == "checkpoint" and not args.rollout_fp8
+    needs_bf16 = args.init_model_source == "torch_dist" or needs_converted_rollout
+    if needs_bf16:
+        bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
+        bf16_sentinel = bf16_dir / "model.safetensors.index.json"
+        if not bf16_sentinel.exists():
+            _prepare_single(args)
+        else:
+            print(f"[full_train] Skipping FP8->BF16 cast: {bf16_sentinel} already exists.")
 
-    if args.rollout_mxfp8:
+    if args.rollout_weight_source == "checkpoint" and args.rollout_mxfp8:
         mxfp8_sentinel = Path(f"{args.model_dir}/{args.mxfp8_name}") / "model.safetensors.index.json"
         if not mxfp8_sentinel.exists():
             _prepare_mxfp8(args)
         else:
             print(f"[full_train] Skipping BF16->MXFP8 conversion: {mxfp8_sentinel} already exists.")
 
-    torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
-    torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
-    if not torch_dist_sentinel.exists():
-        _prepare_spmd(args)
-    else:
-        print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
+    if args.init_model_source == "torch_dist":
+        torch_dist_dir = Path(f"{args.model_dir}/{args.torch_dist_name}")
+        torch_dist_sentinel = torch_dist_dir / "latest_checkpointed_iteration.txt"
+        if not torch_dist_sentinel.exists():
+            _prepare_spmd(args)
+        else:
+            print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
+
+    _prepare_mxfp8_schema(args)
 
     if args.model_local_dir != args.model_dir:
         _prepare_cp(args)
     else:
         print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
-    if args.hf_checkpoint is None:
-        args.hf_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
-
     _train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def full_train(args: ScriptArgs):
+    _full_train(args)
 
 
 if __name__ == "__main__":

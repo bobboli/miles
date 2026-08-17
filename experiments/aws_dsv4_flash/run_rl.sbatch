@@ -19,9 +19,12 @@
 set -euo pipefail
 
 base=/scratch/fsw/portfolios/coreai/projects/coreai_devtech_all/users/lbo/dsv4_flash_rl
-code=/home/lbo/work/dsv4_flash_rl/miles
+code=${CODE:-/home/lbo/work/dsv4_flash_rl/miles}
+megatron_bridge_path=${MEGATRON_BRIDGE_PATH:-}
 precision=${PRECISION:-fp8}
 model_name=${MODEL_NAME:-DeepSeek-V4-Flash-FP8}
+init_model_source=${INIT_MODEL_SOURCE:-torch_dist}
+rollout_weight_source=${ROLLOUT_WEIGHT_SOURCE:-checkpoint}
 num_rollout=${NUM_ROLLOUT:-2}
 update_weight_buffer_size=${UPDATE_WEIGHT_BUFFER_SIZE:-1073741824}
 sglang_mem_fraction_static=${SGLANG_MEM_FRACTION_STATIC:-0.7}
@@ -121,10 +124,18 @@ fi
 mkdir -p "${base}/runs/${run_id}/ray" "${base}/logs" "${base}/hf_cache"
 rm -f "${base}/runs/${run_id}/ray/"{ready-*,done}
 
+container_mounts="${code}:/workspace/miles,${base}:/workspace/data,/raid:/raid"
+if [[ -n "${megatron_bridge_path}" ]]; then
+  [[ -d "${megatron_bridge_path}/src/megatron/bridge" ]]
+  container_mounts+=",${megatron_bridge_path}:/workspace/Megatron-Bridge"
+fi
+
 export BASE="${base}"
 export CODE="${code}"
 export PRECISION="${precision}"
 export MODEL_NAME="${model_name}"
+export INIT_MODEL_SOURCE="${init_model_source}"
+export ROLLOUT_WEIGHT_SOURCE="${rollout_weight_source}"
 export PRECISION_ARGS="${precision_args}"
 export TRAIN_PRECISION_EXTRA_ARGS="${train_precision_extra_args}"
 export NUM_ROLLOUT="${num_rollout}"
@@ -154,13 +165,13 @@ HEAD_NODE=$(scontrol show hostnames "${SLURM_NODELIST}" | head -n1)
 # was submitted with an explicit --export list.
 export SLURM_EXPORT_ENV=ALL
 
-echo "job=${SLURM_JOB_ID} run_id=${run_id} model=${model_name} precision=${precision} nodes=${SLURM_JOB_NUM_NODES}"
-echo "head_node=${HEAD_NODE} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none} container_image=${container_image}"
+echo "job=${SLURM_JOB_ID} run_id=${run_id} model=${model_name} precision=${precision} init_model_source=${init_model_source} rollout_weight_source=${rollout_weight_source} nodes=${SLURM_JOB_NUM_NODES}"
+echo "head_node=${HEAD_NODE} code=${code} megatron_bridge_path=${megatron_bridge_path:-image-default} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none} container_image=${container_image}"
 
 srun --kill-on-bad-exit=1 \
   --container-image="${CONTAINER_IMAGE}" \
   --no-container-mount-home \
-  --container-mounts="${code}:/workspace/miles,${base}:/workspace/data,/raid:/raid" \
+  --container-mounts="${container_mounts}" \
   --container-workdir=/workspace/miles \
   bash -lc '
     set -euo pipefail
@@ -170,7 +181,7 @@ srun --kill-on-bad-exit=1 \
     export HOME=/tmp/miles-home-${SLURM_JOB_ID}-${rank}
     mkdir -p "${HOME}"
     chmod 700 "${HOME}"
-    export PYTHONPATH=/workspace/miles:${PYTHONPATH:-}
+    export PYTHONPATH=/workspace/miles:/workspace/Megatron-Bridge/src:${PYTHONPATH:-}
     export LD_PRELOAD=/workspace/data/lib/libidempotent_shm_unlink.so${LD_PRELOAD:+:${LD_PRELOAD}}
     if [[ -n "${SGLANG_PATCH_FILE}" ]]; then
       # Space-separated so an experiment can stack patches without merging them.
@@ -254,6 +265,8 @@ srun --kill-on-bad-exit=1 \
       # shellcheck disable=SC2086
       python3 scripts/run_deepseek_v4.py full-train \
         --model-name "${MODEL_NAME}" \
+        --init-model-source "${INIT_MODEL_SOURCE}" \
+        --rollout-weight-source "${ROLLOUT_WEIGHT_SOURCE}" \
         --num-nodes 8 \
         --num-gpus-per-node 4 \
         --hardware GB300 \

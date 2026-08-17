@@ -18,6 +18,7 @@ class TestWorkerScriptArgs:
         assert args.top_k == 0
         assert args.run_backward is False
         assert args.ref_load is None
+        assert args.megatron_to_hf_mode == "raw"
         assert args.source_patcher_config is None
         assert args.routing_replay_dump_path is None
         assert args.routing_replay_load_path is None

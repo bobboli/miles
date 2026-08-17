@@ -1,6 +1,6 @@
 # DeepSeek-V4-Flash-0731 MXFP8 RL bring-up
 
-Last updated: 2026-08-12
+Last updated: 2026-08-17
 
 ## Objective
 
@@ -14,6 +14,181 @@ Two phases, both training with the Megatron MXFP8 recipe on 32 GB300 GPUs:
 
 Both phases share one trainer checkpoint, so the mismatch delta isolates the
 rollout-side weight format.
+
+## 2026-08-17 direct-HF initial sync passes on local B300
+
+Fresh P1/P2 runs no longer require the 567 GB BF16 HF artifact or an offline
+`torch_dist` seed. The new `init_model_source=hf` path imports the official
+hybrid checkpoint through Megatron-Bridge at trainer startup, while
+`rollout_weight_source=trainer` starts SGLang in dummy-load mode and obtains all
+weights from the initial online sync.
+
+P1 allocates from a metadata-only MXFP8 schema; P2 allocates the official
+FP8/MXFP4 layout and uses `flashinfer_mxfp4`. On the current 8×B300 node, two
+TP4/EP4 engines completed every bucket, both engines returned 200 from
+`end_weight_update` and `continue_generation`, all eight trainer ranks reported
+`update_weights phase=end ok=true`, and both containers exited zero. P1 took
+about 285--287 s for the update. P2 took 615--617 s, including about 358 s of
+one-time MHC/TileLang compilation.
+
+This run deliberately used zero optimizer steps. It validates direct HF load,
+Bridge export/quantization, atomic weight/scale grouping, dummy rollout
+allocation and MXFP4 finalization, but not numerical parity, repeated hot
+reload, checkpoint resume or OCI GB200 execution.
+
+## 2026-08-17 root cause confirmed: unregistered MXFP4 clamp tensor
+
+The packed-MXFP4 update failure now reproduces and is fixed on the current local
+B300 node. The differentiating flag missing from the earlier local controls was
+`enable_memory_saver=True`.
+
+`Mxfp4FlashinferTrtllmMoEMethod.create_moe_runner` allocates
+`_gemm1_clamp_limit_tensor` as a plain CUDA tensor, with one `10.0` value per
+local expert. Model construction occurs inside TorchMemorySaver's `weights`
+region. With `enable_weights_cpu_backup=False`, pausing and resuming that region
+preserves the virtual address but not the data. The tensor is not a parameter or
+buffer, so `_export_static_state`, the Miles full update and WeightChecker all
+miss it; `apply()` still passes it to every TRT-LLM MXFP4 MoE call as
+`gemm1_clamp_limit`.
+
+The causal chain is measured at four levels:
+
+| Measurement | Result |
+|---|---|
+| standalone TorchMemorySaver tensor in the `weights` region | `[10.0]` before pause/resume, `[0.0]` after |
+| real 64-expert frozen-input TRT-LLM MXFP4 op | clamp 10 digest `cbbad8e8e1fe2710`; clamp 0 digest `07854d2fef297a06`, relative L2 1.0; restoring 10 is bitwise exact |
+| `dsv4-miles-initial-sync-memsaver-hchead`, graph enabled | 67,569 tensors; checker `Success`; first generation `4/4` truncated at 1024 |
+| `dsv4-miles-initial-sync-memsaver-nograph` | same with `disable_cuda_graph=True`; checker `Success`; `4/4` truncated |
+| `dsv4-miles-initial-sync-memsaver-clampfix` | register the tensor as a non-persistent buffer; checker `Success` including all 43 clamp buffers; token counts 26/45/21/124, all `finish=stop`, `0/4` truncated |
+
+All three end-to-end containers exited zero. The failing generations repeat
+prompt fragments just like the OCI jobs. The fixed container changes no weight,
+quantization, transport, graph or kernel code; it only registers the existing
+tensor on the expert layer with `persistent=False`. SGLang's existing
+memory-saver static-state export/import then backs it up and restores it, and
+the checker covers it.
+
+This identifies the root cause. CUDA graph, visible weights, rank-local bucket
+transport, MXFP4 quantization and restore/repack are not the failure mechanism.
+The remaining measurement is one OCI packed-MXFP4 RL verification with the
+updated SGLang MR.
+
+## 2026-08-17 local B300 full-update control
+
+The release runs locally on one B300 node with TP4/EP4,
+`moe_runner_backend=flashinfer_mxfp4`, 1 GiB flattened CUDA-IPC buckets and one
+begin/end transaction spanning all 48 shards. GPU 0-3 provide both the engine
+ranks and their corresponding rank-local export buffers. The early controls
+called the release/resume APIs but had `enable_memory_saver=False`, so those
+calls were no-ops. The root-cause runs above correct that coverage gap.
+
+An initial full replay produced `0/4` to `4/4` truncated generations, but its
+weight checker exposed a harness error rather than the Phase 2 failure. The
+release tensor `layers.N.attn.wo_a.weight` is FP8 `[8192, 4096]` with a 128x128
+UE8M0 scale. With `SGLANG_OPT_FP8_WO_A_GEMM=0`, the runtime parameter is a BF16
+`[2048, 4096]` TP shard. The harness copied FP8 numeric values directly into
+BF16, yielding `max_abs_err=447.890625` and corrupting almost every element.
+Real Miles does not quantize `wo_a` in this configuration; it sends the BF16
+trainer weight.
+
+Two controls isolated and then removed that error:
+
+| Container / selector | Checker | Generation |
+|---|---|---|
+| `dsv4-experts-plus-nonexpert-weights-check` | fails; raw BF16 `wo_a` error up to 447.890625 | `0/4` to `4/4` truncated; invalid |
+| `dsv4-experts-plus-nonexpert-weights-no-woa-check` | only small block-FP8 pair/layout differences | `0/4` to `0/4`; answers correct |
+| `dsv4-full-miles-valid-woa-check`, `miles_full` | `Success` | `0/4` to `0/4`; all four texts identical |
+| `dsv4-miles-initial-sync-full-strict`, `miles_full` before first generation | `Success` after 67,566 tensors, before KV/graph resume | first generation `0/4` truncated; all answers correct; exit 0 |
+| `dsv4-miles-requantize-1p05-roundtrip-v3`, experts only | release expert -> BF16 x1.05 -> Miles MXFP4; 66,048 tensors | `0/4` after update; restore gives `0/4` and exact baseline text |
+| `dsv4-miles-requantize-highbatch-strict-roundtrip`, experts only | four independent rank-local producers; batch-256 CUDA graph; strict restore checker `Success` | baseline/update/restore each `64/256` at the deliberate 64-token cap; all 192 completed answers restore; exit 0 |
+
+`miles_full` reconstructs the initial BF16 master value of every `wo_a` by
+multiplying each release FP8 block by its UE8M0 scale, omits the scale because
+the runtime parameter is BF16, and converts the remaining scales to their Miles
+update names/layouts. It sent 67,566 tensors. This is the same decode that
+created the trainer's initial BF16 HF checkpoint, without loading Megatron or
+taking an optimizer step.
+
+The passing strict checker matters more than the behavioral smoke: it verifies
+all visible expert and nonexpert parameters after the complete update. The
+changed-value control additionally exercises the current workspace's real
+`mxfp4_quantize`: every release expert was dequantized to BF16, multiplied by
+1.05, and requantized. For one real expert, 44.8617% of weight bytes and
+45.9473% of scale bytes changed, while the represented tensor changed by
+relative L2 0.0206583. After all 66,048 expert tensors were updated, all four
+answers remained correct and none reached the token limit. Restoring the
+release recovered the four baseline generations byte for byte.
+
+The rollout-sized run removes two remaining differences from that first
+changed-value control. It uses four independently spawned CUDA producer
+processes, one for each TP rank, and captures the decode graph through batch
+size 256. Each process creates and retains its own flattened CUDA-IPC bucket
+while the engine processes one begin/end transaction spanning all 48 shards.
+The baseline, changed and restored generations each report `64/256` at the
+64-token cap. Those 64 are copies of the intentionally open-ended fourth test
+prompt; all other 192 requests finish, and their final answers match after
+restore. Hidden-reasoning text is not fully deterministic at batch 256, so a
+byte-for-byte text comparison is not a valid restore test there. The strict
+weight checker is: it snapshots the finalized kernel layout before the update
+and reports `Success` after restore.
+
+The initial trainer sync happens before the first rollout and before any
+optimizer step. A separate full-model control now follows that ordering: it
+skips baseline generation, snapshots the fresh engine, runs the release ->
+weights-only -> pause -> one full update -> continue sequence, strictly compares
+the finalized model, restores KV cache and CUDA graph, and only then generates.
+All 67,566 tensors load, the strict compare reports `Success`, all four first
+generations answer correctly, and none reaches the 1024-token limit. This rules
+out prior user generation as a prerequisite for a correct reload, but this
+historical control had memory saver disabled and skipped the three `hc_head_*`
+tensors. The 67,569-tensor root-cause runs above supersede it for the production
+memory lifecycle.
+
+The real Miles fused-FC1 conversion also has a checkpoint-byte control. A
+release expert's `w1` and `w3` were decoded to BF16 and concatenated into the
+Megatron `linear_fc1` layout. Running that tensor through `convert_to_hf` and
+the MXFP4 processor reproduced both release weights and both UE8M0 scales
+exactly. This verifies the gate/up split and quantizer entry point for a real
+tensor, but not distributed PP/EP/TP gathering.
+
+The same encoder check was extended over every packed expert in the release.
+All 35,328 weights across the 46 expert-bearing shards re-encode byte for byte,
+including all 33,024 main-model expert tensors the update sends and 2,304
+speculative tensors it excludes. Their UE8M0 scales also match exactly. The
+eight-GPU read-only check exits zero.
+
+The kernel output itself now has a fixed-input control at the production
+EP-rank size. All 64 real layer-0 local experts were shuffled into the TRT-LLM
+layout and evaluated after fresh MXFP8 activation quantization and top-8 packing;
+64 fixed tokens route across all 64 experts. Fresh repeat, identity hot reload,
+and restore after a changed update were bitwise identical (`max_abs=0`, the
+same output SHA-256 prefix `cbbad8e8e1fe2710`). Negating both E2M1 sign bits
+changed the output with relative L2 1.5391512, so the op demonstrably consumed
+the reloaded bytes. Zeroing only `_gemm1_clamp_limit_tensor` changed output by
+relative L2 1.0 and restoring 10 was bitwise exact. The container
+`dsv4-mxfp4-frozen-moe-output` exits zero.
+
+The local evidence therefore clears the initial-value Miles-format payload,
+ordinary post-master-weight value changes, the Miles MXFP4 quantizer, packed
+MXFP4 restore/repack, fixed-input TRT-LLM MoE output, 1 GiB bucket transport,
+independent producer processes, batch-256 graph/tactic selection and local
+TP4/EP4 execution. The early controls did not clear the real memory cycle; the
+root-cause section above shows that it is the trigger.
+Inspection of the installed FlashInfer path further reduces the stale-state
+hypothesis: autotuning caches tactic IDs but no tensor pointer; the raw op
+constructs a launcher, runner and workspaces for each call and reads all current
+tensor `data_ptr()` values during `prepare_moe`.
+
+Distributed Megatron PP/EP/TP gather and eight-node colocated orchestration are
+not required to trigger the failure: the production-order local replay now
+reproduces it with the same image and actual memory saver. The next useful probe
+is an OCI verification with the clamp buffer fix.
+
+This is not explained by a newer local patch. The patched MXFP4 source in the
+retained full-replay container is byte-identical to the current experiment
+patch. Its last functional change is the address-stability fix that failing job
+454574 already carried. The CUDA-IPC clone/synchronize patch predates the bad
+jobs and is visibly active in the retained local container as well.
 
 ## Checkpoint layout of the release
 
@@ -474,6 +649,11 @@ twenty-three minutes on four GPUs.
 | 456194 | routed experts only | 0/4 truncated before and after |
 | 456224 | plus the engine's release/resume cycle | 0/4 truncated before and after |
 
+Correction after the root-cause run: this harness had
+`enable_memory_saver=False`. The API calls in 456224 returned successfully but
+did not release or restore physical memory, so this row did not cover the
+production memory cycle.
+
 456154 failed on `model.layers.0.self_attn.wo_b.weight_scale_inv`:
 `assert self.data.shape == loaded_weight.shape`. The first load reshapes the
 attention scales, so their own checkpoint bytes no longer fit the parameter they
@@ -481,13 +661,13 @@ came from. That is the same second-load problem in stock SGLang, on a path this
 work does not touch; phase 2's real update does not hit it because miles sends
 scales requantized to the shape the parameter now has.
 
-So the MoE update path carrying correct data is fine, and so is the memory cycle
-around it. What remains untested between the reproducer and phase 2 is the
+So the MoE update path carrying correct data is fine; the real memory cycle was
+still untested here. What remained untested between the reproducer and phase 2 was the
 transport — phase 2 delivers weights as flattened buckets over CUDA IPC, not as
 plain tensors — and the non-expert parameters, which phase 2 also updates and
 the reproducer cannot send from the checkpoint.
 
-### The transport variant did not get a verdict
+### The first transport variants did not get a verdict
 
 Five further runs (456275, 456340, 456409, 456493, 456568, 456670) tried to send
 the identity update over flattened buckets and CUDA IPC. Every one died in the
@@ -516,6 +696,45 @@ per-handle accumulation; the memory does not accumulate per handle.
 Next, and not by tuning this further: either give the reproducer its own GPU for
 staging, or go back to the eight-node path with a specific diagnostic rather than
 a general one.
+
+### 2026-08-17 — dedicated-exporter B300 controls pass
+
+The local node has eight B300s, so the reproducer can use GPU 0-3 for TP4/EP4
+and a separate GPU for CUDA-IPC staging. The official release, exact OCI image
+digest and both runtime patches were used. Unlike 459395, the strict run keeps a
+single begin/end transaction across all 48 shards. It also retries
+`flush_cache()` until the scheduler explicitly reports idle; the first attempt
+was in fact too early and the second succeeded.
+
+The strict identity run sent 70,656 routed-expert tensors in 64 MiB flattened
+buckets. It completed with `0/4` prompts truncated before and after, identical
+text and exit code zero. A two-shard window had produced `4/4` truncation, but
+that is a false positive caused by postprocessing a partially loaded model at
+every close, not the transaction Miles uses.
+
+Two changed-payload round trips then tested what identity cannot:
+
+| Payload mutation | Mutated model | After restoring release payload |
+|---|---|---|
+| flip both E2M1 sign bits in every packed expert weight byte | `4/4` truncated, repeated garbage | `0/4`, answers `4`, `Paris`, `51`, `blue` |
+| increment every expert UE8M0 scale exponent by one | immediate incoherent text | `0/4`, full text identical to the initial baseline |
+
+The small hot-reload contract was strengthened in parallel: its second load now
+uses different random packed weights and scales and compares the rebuilt layout
+against a fresh load of that new payload. All four parameters match byte for
+byte while retaining their original addresses.
+
+So the kernel reads changed weights and changed scales, and restoring either is
+reversible. Packed MXFP4 reload, flattened CUDA-IPC and TP4/EP4 work locally on
+B300. These historical runs also had memory saver disabled, so they did not
+cover the actual release/resume cycle. The remaining difference was no longer the
+transport-format cell. The local control sends 70,656 checkpoint-origin HF
+expert tensors in 64 MiB chunks. Miles exports BF16 trainer tensors through
+Megatron Bridge, re-quantizes them, includes non-expert weights and chunks at
+1 GiB. At this point, replaying that full scope was the next discriminating
+measurement. The `miles_full` result at the top of this file supersedes that
+recommendation: its 1 GiB full-model transaction passes both the strict checker
+and generation.
 
 ### 456794 — CUDA graph replay is not the mechanism either
 
@@ -616,7 +835,7 @@ stating plainly rather than reading past: unpacking the experts also forces
 working configuration from the broken one, but it does not separate the *weights*
 from the *kernel*. Two facts point at the kernel rather than the payload: serving
 the packed checkpoint untouched works (444087, 456107), and an identity update of
-the packed experts on one node, memory cycle included, leaves generation
+the packed experts on one node, with memory saver disabled, leaves generation
 unchanged (456194, 456224). What no run has yet isolated is packed weights served
 by a different MXFP4 kernel — `marlin` and `humming` both accept them
 (`fp8.py:371`, `fp8.py:378`).
@@ -639,22 +858,21 @@ the wrong rank — but the logs refute it for free: the failing 454574 and the
 working 458663 both run `tp_size=4, ep_size=4`, the same topology the one-node
 reproducer uses.
 
-Crossing off what the working run and the reproducer between them already cover
-leaves exactly one untested cell:
+At the time of the OCI runs, crossing off what the working run and the
+reproducer between them already covered left one untested cell:
 
 | | packed MXFP4 | unpacked FP8 |
 |---|---|---|
 | plain tensor hand-off | 456194, 456224 — pass | — |
-| flattened bucket over IPC | **never run** | 458663 — pass |
+| flattened bucket over IPC | local B300, 2026-08-17 — pass | 458663 — pass |
 
-Non-expert parameters, the bucket transport, the trained-weight payload and the
-topology are each exercised by a run that works. The combination of the bucket
-transport with packed MXFP4 experts is the one thing only the failing runs do,
-and the reproducer's attempt at it never survived its own memory footprint —
-459395, with the engine cut to a 0.35 static fraction and windows closing every
-two shards, reached further than any before it and still exhausted the device.
-That route is structurally blocked: the reproducer hosts the exporting process
-and an importing worker on one GPU, which the rollout never does.
+The combination of bucket transport with packed MXFP4 experts was the one thing
+only the failing runs did when this table was first written. It is no longer an
+untested cell: dedicated-staging expert controls complete identity,
+changed-weight and changed-scale round trips, and the later full-model control
+also completes with rank-local buffers on GPU 0-3. The old 459395 route was
+blocked by its single shared staging allocation strategy, not by CUDA IPC or
+the update topology itself.
 
 The obvious mechanism for such a pairing — reconstructed views outliving the
 buffer they point into — is already excluded. The engine-side patch drops each
