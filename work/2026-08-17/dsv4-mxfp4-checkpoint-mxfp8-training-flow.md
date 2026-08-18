@@ -32,9 +32,13 @@ DeepSeek-V4 发布的 Hugging Face checkpoint 可以作为 MXFP8 训练的初始
 
 direct-HF 适合 smoke、一次性实验和消除离线转换依赖；重复扫参仍建议复用一次性生成的 model-only `torch_dist`，避免每个 fresh run 重付 HF 导入成本。
 
-截至 2026-08-17，Miles 已实现 direct-HF + trainer-owned rollout，并在本机 8×B300 上完成 P1/P2 的零训练步初始同步验证。现有两阶段转换仍保留为 fallback；完整训练、数值一致性和 OCI GB200 验证尚未完成。
+截至 2026-08-18，Miles 已实现 direct-HF + trainer-owned rollout。本机
+8×B300 的零训练步初始同步和 OCI 32-GPU 的 P1/P2 单步训练 smoke 均已
+通过；两个 OCI 作业都从官方 HF checkpoint 直接初始化 trainer，没有读取
+离线 BF16 HF 或 `torch_dist` seed。现有两阶段转换仍保留为 fallback；多步
+训练、数值一致性、save/resume 和 R3 验证尚未完成。
 
-## 2026-08-17 实现状态
+## 2026-08-18 实现状态
 
 | 项目 | P1：MXFP8 rollout | P2：FP8 + MXFP4 expert rollout |
 |---|---|---|
@@ -42,10 +46,38 @@ direct-HF 适合 smoke、一次性实验和消除离线转换依赖；重复扫�
 | SGLang 启动布局 | 从官方 checkpoint header 生成约 6.2 MB metadata-only MXFP8 schema；无 tensor/index payload | 使用官方 config/量化布局，但 `load_format=dummy`，不读取 checkpoint tensor |
 | 首次权重来源 | trainer 在线量化为 MXFP8 | trainer 在线量化；non-routed 为 FP8，routed experts 为 packed MXFP4 |
 | 本机结果 | 两个 TP4 engine 完成全部 bucket，`end_weight_update`/`continue_generation` 为 200，容器退出 0 | 同样完整通过；MoE backend 为 `flashinfer_mxfp4` |
+| OCI no-R3 smoke | job `501870`，一轮 rollout/train + 训练后第二次 hot reload，`COMPLETED 0:0` | job `501657`，同样完成，`COMPLETED 0:0` |
 
 本机验证使用单节点 8×B300、两个 TP4 colocated SGLang engine、零 optimizer step。P1 初始同步约 285--287 秒；P2 初始同步约 615--617 秒，其中约 358 秒是第一次 MHC/TileLang 冷编译。P2 的模型常驻约 46.3 GB/rank，在线更新期间峰值约 170 GB/rank，未发生 OOM。
 
-这次验证证明了以下链路可以工作：官方 HF direct load、Bridge 名称/layout 转换、trainer-owned dummy rollout、原子 weight/scale bucket、MXFP4 restore/repack 生命周期以及更新结束后的恢复生成接口。它还不证明 optimizer update、loss/logit parity、多次连续 hot reload、save/resume 或更新后 token 数值正确；这些属于 OCI 阶段。
+本机验证证明了以下链路可以工作：官方 HF direct load、Bridge 名称/layout
+转换、trainer-owned dummy rollout、原子 weight/scale bucket、MXFP4
+restore/repack 生命周期以及更新结束后的恢复生成接口。
+
+OCI smoke 在此基础上继续覆盖了一次真实 optimizer step 和第二次
+trainer-to-rollout hot reload。两个作业都显式设置 `enable_r3=False`：
+
+| Phase | OCI job | 首次 update | `compute_log_prob` | 完整 train | 第二次 update | 总状态 |
+|---|---:|---:|---:|---:|---:|---|
+| P1，MXFP8 rollout | `501870` | 428--430 s | 688 s | 1520--1522 s | 225--226 s | `COMPLETED 0:0`，59:25 |
+| P2，FP8 + packed-MXFP4 experts | `501657` | 388--389 s | 667 s | 1492--1495 s | 163--164 s | `COMPLETED 0:0`，54:57 |
+
+P1 使用 metadata-only MXFP8 schema；它只有 config/tokenizer 和从
+safetensors header 提取的布局信息，不含 tensor 或 weight index。P2 直接使用
+官方 config。两者都让 SGLang `load_format=dummy`，实际权重只来自 trainer
+在线更新，因此这里的“不需要离线转换”准确指不需要生成或读取离线权重
+artifact，而不是 P1 连 metadata 布局文件都不需要。
+
+rollout 不是空跑：P1 的 `raw_reward=0.546875`、
+`truncated_ratio=0.558594`，P2 分别为 `0.710938` 和 `0.371094`。P2
+不再复现修复前接近 100% 截断和零 reward 的坏生成。单步结果的
+`train_rollout_kl` 仍为 P1 `0.1267`、P2 `0.1310`，不能据此宣称数值 parity
+已经解决。
+
+这次 smoke 仍不证明两个以上 optimizer step、第二次 hot reload 后再次生成、
+save/resume、跨拓扑 load 或 R3。两个作业在 Ray 已成功之后的进程 teardown
+阶段仍打印 CUDA IPC shared-memory unlink 和 W&B broken-pipe 栈，但 Ray 报告
+success，Slurm 均以 `0:0` 完成；这是待清理的退出路径问题，不是运行期失败。
 
 相关实现边界：
 
@@ -53,7 +85,12 @@ direct-HF 适合 smoke、一次性实验和消除离线转换依赖；重复扫�
 - `miles/utils/hf_rollout_schema.py` 只读取 safetensors header，为 P1 构造无权重 payload 的 MXFP8 schema；
 - `miles_plugins/megatron_bridge/deepseek_v4.py` 补充 Miles DSV4 attention、HC、compressor 和 indexer 参数映射；
 - `HfWeightIteratorBridge` 保证同一个 Megatron 参数产生的 weight/scale，以及跨参数的 DSV4 atomic group，不会被 bucket 边界拆开；
-- SGLang MXFP4 hot-reload 修复在内部 MR `lbo/sglang!1`；Megatron-Bridge DSV4 兼容修改目前只在本地 worktree，尚因 fork 写权限未推送。
+- SGLang TRT-LLM MXFP4 hot-reload 修复在内部 MR `lbo/sglang!1`；R3
+  `HashTopK` routed-expert capture 已拆到独立 MR `lbo/sglang!2`，本次 smoke
+  没有应用它；
+- Megatron-Bridge DSV4 direct-HF 兼容修改已推送到
+  `miles-dsv4-direct-hf`，验证 commit 为 `ca1a03de`；Miles 验证 commit 为
+  `5cb48105e`。
 
 ## 不同精度分别代表什么
 
@@ -242,9 +279,12 @@ updated BF16 Megatron weights
 
 同一组 weight 和 scale 必须作为原子更新单元；不能在每个 bucket 后执行不可重复的 layout post-processing。
 
-## 后续验证顺序
+## 后续完整验证顺序
 
-1. 在 OCI GB200 上分别完成 P1/P2 的至少两个 optimizer updates。
+2026-08-18 的 no-R3 smoke 已为 P1/P2 各完成一个 optimizer update 和训练后的
+第二次 hot reload。以下是从该结果继续扩展的验证顺序：
+
+1. 将 OCI P1/P2 扩展到至少两个 optimizer updates。
 2. 每个 phase 至少完成两次 trainer -> rollout hot reload，并在更新后执行真实 token generation。
 3. 检查 direct-HF 导入后的 trainable parameter 中没有残留 packed `int8` 或 checkpoint FP8 payload。
 4. 对比 direct-HF 和当前 `release -> BF16 HF -> torch_dist` 路径的参数、logits 和 loss。

@@ -1,6 +1,6 @@
 # DeepSeek-V4-Flash-0731 MXFP8 RL bring-up
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Objective
 
@@ -14,6 +14,50 @@ Two phases, both training with the Megatron MXFP8 recipe on 32 GB300 GPUs:
 
 Both phases share one trainer checkpoint, so the mismatch delta isolates the
 rollout-side weight format.
+
+## 2026-08-18 direct-HF no-R3 OCI smoke passes
+
+P1 and P2 can now complete a one-step training smoke without an offline BF16 HF
+conversion or a `torch_dist` seed. Both jobs used the official hybrid HF
+checkpoint as the trainer source (`init_model_source=hf`), trainer-owned online
+rollout weights (`rollout_weight_source=trainer`) and SGLang dummy loading. P1
+used a 6.2 MB metadata-only MXFP8 schema with no tensor/index payload; P2 used
+the official config and packed-MXFP4 expert layout directly.
+
+| Phase | OCI job | R3 | Initial update | Log-prob | Train | Post-train update | Final state |
+|---|---:|---|---:|---:|---:|---:|---|
+| P1: MXFP8 rollout | `501870` | off | 428--430 s | 688 s | 1520--1522 s | 225--226 s | `COMPLETED 0:0`, 59:25 |
+| P2: FP8 + packed-MXFP4 experts | `501657` | off | 388--389 s | 667 s | 1492--1495 s | 163--164 s | `COMPLETED 0:0`, 54:57 |
+
+Each job ran on 8 OCI nodes / 32 GPUs, generated a real 256-sample rollout,
+completed `compute_log_prob`, performed one optimizer step and synchronized the
+updated weights a second time. All 32 ranks reported both update transactions
+successful. The P2 job applied only the SGLang TRT-LLM MXFP4 hot-reload and
+memory-saver patches; the separate R3 `HashTopK` patch was not applied.
+
+The rollout metrics rule out the earlier corruption:
+
+| Metric | P1 `501870` | P2 `501657` |
+|---|---:|---:|
+| `raw_reward` | 0.546875 | 0.710938 |
+| `truncated_ratio` | 0.558594 | 0.371094 |
+| `repetition_frac` | 0.0 | 0.0 |
+| `train_rollout_kl` | 0.126726 | 0.131041 |
+
+The first three values show that P2 no longer has zero reward, near-100%
+truncation or repetitive garbage. The KL values are still much higher than the
+older four-step reference runs, so this smoke does not establish numerical
+parity.
+
+The scope is deliberately limited: one optimizer step, no generation after the
+second reload, no save/resume and no R3. Both jobs also printed CUDA IPC unlink,
+NCCL process-group and W&B broken-pipe atexit stacks after Ray had declared
+success. Slurm exited `0:0` in both cases, making these teardown defects rather
+than runtime failures, but they remain cleanup work.
+
+Validated revisions are Miles `5cb48105e`, Megatron-Bridge `ca1a03de`, and
+SGLang MR !1 head `605830cd5c`. R3 is split into independent SGLang MR !2 at
+`8007bb9d31` and was not part of this result.
 
 ## 2026-08-17 direct-HF initial sync passes on local B300
 
@@ -31,10 +75,11 @@ TP4/EP4 engines completed every bucket, both engines returned 200 from
 about 285--287 s for the update. P2 took 615--617 s, including about 358 s of
 one-time MHC/TileLang compilation.
 
-This run deliberately used zero optimizer steps. It validates direct HF load,
-Bridge export/quantization, atomic weight/scale grouping, dummy rollout
-allocation and MXFP4 finalization, but not numerical parity, repeated hot
-reload, checkpoint resume or OCI GB200 execution.
+This local run deliberately used zero optimizer steps. It validates direct HF
+load, Bridge export/quantization, atomic weight/scale grouping, dummy rollout
+allocation and MXFP4 finalization. The OCI smoke above adds one optimizer step
+and a second reload, but not broader numerical parity, repeated post-update
+generation or checkpoint resume.
 
 ## 2026-08-17 root cause confirmed: unregistered MXFP4 clamp tensor
 
@@ -70,8 +115,9 @@ the checker covers it.
 
 This identifies the root cause. CUDA graph, visible weights, rank-local bucket
 transport, MXFP4 quantization and restore/repack are not the failure mechanism.
-The remaining measurement is one OCI packed-MXFP4 RL verification with the
-updated SGLang MR.
+The OCI P2 smoke above verifies that the packed-MXFP4 path produces usable
+rollouts with the updated SGLang MR. Longer numerical and lifecycle validation
+remains.
 
 ## 2026-08-17 local B300 full-update control
 
@@ -181,8 +227,9 @@ tensor `data_ptr()` values during `prepare_moe`.
 
 Distributed Megatron PP/EP/TP gather and eight-node colocated orchestration are
 not required to trigger the failure: the production-order local replay now
-reproduces it with the same image and actual memory saver. The next useful probe
-is an OCI verification with the clamp buffer fix.
+reproduces it with the same image and actual memory saver. OCI job `501657`
+subsequently verified the clamp-buffer fix in the full eight-node path; the next
+useful probe is a multi-step run that generates after another post-train reload.
 
 This is not explained by a newer local patch. The patched MXFP4 source in the
 retained full-replay container is byte-identical to the current experiment

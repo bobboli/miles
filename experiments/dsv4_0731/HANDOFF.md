@@ -1,9 +1,53 @@
-# Handoff: 0731 MXFP8 RL, updated 2026-08-17
+# Handoff: 0731 MXFP8 RL, updated 2026-08-18
 
 Written for whoever picks this up next. It says where the work stands, what is
 open, and what it costs to be wrong about each piece. It does not repeat
 [STATUS.md](STATUS.md) — that is the evidence file, and every claim here points
 into it. Read [INDEX.md](../INDEX.md) first if you have not.
+
+## Direct-HF P1/P2 training smoke passes on OCI
+
+The no-offline-conversion bring-up is complete for one no-R3 training smoke in
+each phase. Both jobs used `init_model_source=hf`,
+`rollout_weight_source=trainer`, `load_format=dummy` in SGLang, 8 OCI nodes / 32
+GPUs and one real optimizer step. Neither trainer loaded a BF16 HF conversion or
+a `torch_dist` seed. P1 still uses a 6.2 MB metadata-only MXFP8 schema to tell
+SGLang how to allocate tensors; it contains no weights or weight index.
+
+| Phase | Job | Covered path | Result |
+|---|---:|---|---|
+| P1: MXFP8 rollout | `501870` | initial online update, real generation, log-prob, actor train, post-train update | `COMPLETED 0:0`, 59:25 |
+| P2: FP8 + packed-MXFP4 experts | `501657` | same, including MXFP4 restore/repack and memory-saver lifecycle | `COMPLETED 0:0`, 54:57 |
+
+All 32 trainer ranks completed both update transactions. P1's initial and
+post-train updates took about 429 s and 226 s; P2 took 389 s and 164 s. The
+generated batches were healthy enough for a smoke: P1 reported
+`raw_reward=0.546875`, `truncated_ratio=0.558594`; P2 reported `0.710938` and
+`0.371094`. In particular, P2 no longer reproduces the pre-fix zero-reward,
+near-100%-truncation failure.
+
+Both jobs explicitly had `enable_r3=False` and
+`use_rollout_routing_replay=False`. SGLang MR
+[!1](https://gitlab-master.nvidia.com/lbo/sglang/-/merge_requests/1) now contains
+only the TRT-LLM MXFP4 hot-reload/memory-saver fixes. R3 `HashTopK` capture is a
+separate MR [!2](https://gitlab-master.nvidia.com/lbo/sglang/-/merge_requests/2)
+and was not applied to these jobs.
+
+Do not overstate the result. Each job performed one optimizer step and two
+weight reloads, but did not generate again after the second reload. Saving,
+resume, two-or-more optimizer steps, R3 and direct-HF/offline-seed numerical
+parity remain unverified. `train_rollout_kl` was still 0.1267 for P1 and 0.1310
+for P2. At shutdown, Ray actors also emitted CUDA IPC unlink and W&B broken-pipe
+atexit stacks after the work had succeeded; both Ray submissions reported
+success and both Slurm jobs exited `0:0`, so this is a teardown issue rather
+than a runtime failure.
+
+Validated source revisions:
+
+- Miles `dsv4-direct-hf-rollout`: `5cb48105e`;
+- Megatron-Bridge `miles-dsv4-direct-hf`: `ca1a03de`;
+- SGLang TRT-only MR !1: `605830cd5c`;
+- separate, unused R3 MR !2: `8007bb9d31`.
 
 ## Root cause confirmed on local B300
 
@@ -69,10 +113,8 @@ derived tensor per atomic-group slot. The iterator now keeps every consecutive
 derived tensor together before combining DSV4 cross-parameter groups. P2 then
 completed all buckets and the final MXFP4 repack.
 
-This is an initial-sync integration result, not a completed RL result. It does
-not yet cover optimizer steps, post-update token parity, repeated hot reload,
-save/resume, or GB200. Those remain the OCI verification scope. The full design
-and validation boundary are in
+This local result is now supplemented by the one-step OCI P1/P2 smoke above.
+The full design and remaining validation boundary are in
 [`work/2026-08-17/dsv4-mxfp4-checkpoint-mxfp8-training-flow.md`](../../work/2026-08-17/dsv4-mxfp4-checkpoint-mxfp8-training-flow.md).
 
 ## 2026-08-17 local B300 update
@@ -241,19 +283,25 @@ numbers have.
 
 ## What is open
 
-The root cause and local fix are complete. What remains is operational
-verification: run packed-MXFP4 RL on OCI with the updated SGLang MR and confirm
-that reward, truncation and train/rollout mismatch return to the healthy range.
-The previous OCI failures (`raw_reward=0`, `truncated_ratio=0.99–1.00`,
-`train_rollout_kl=0.33–0.43`) are now explained by the zeroed clamp tensor.
+The no-R3 direct-HF P1/P2 smoke and the packed-MXFP4 operational verification
+are complete. The old P2 corruption (`raw_reward=0`,
+`truncated_ratio=0.99–1.00`) does not reproduce with the SGLang fix. What remains
+is broader correctness and lifecycle coverage, not another initial-sync
+bisection:
+
+- run at least two optimizer steps and generate after each post-train reload;
+- investigate the still-high one-step `train_rollout_kl` before claiming parity;
+- exercise save/resume and a reusable model-only `torch_dist` seed;
+- validate R3 separately after MR !2 review;
+- clean up the CUDA IPC/W&B atexit warnings without changing the now-passing
+  runtime path.
 
 ### The next measurement
 
-After review, apply the updated SGLang MR to one packed-MXFP4 OCI run. A single
-initial rollout is enough to verify the fix: it should no longer have near-1.0
-truncation or zero reward. Do not repeat payload capture, graph, bucket or
-weight-layout bisections unless the fixed run contradicts the local end-to-end
-result.
+Extend the passing jobs to `num_rollout>=2`, so a second optimizer update and
+generation after the second post-train reload are observed. Keep R3 off for that
+control. Do not repeat payload capture, graph, bucket or weight-layout
+bisections unless the longer run contradicts the passing one-step result.
 
 Two dead ends, so they are not retried:
 
@@ -278,12 +326,14 @@ the first two are independent of the MXFP4 work and of each other.
 | [lbo/miles!2](https://gitlab-master.nvidia.com/lbo/miles/-/merge_requests/2) | Weight-update IPC lifetime and the post-update checksum |
 | [lbo/miles!3](https://gitlab-master.nvidia.com/lbo/miles/-/merge_requests/3) | Registering the release and configuring rollout from its actual layout |
 | [lbo/miles!4](https://gitlab-master.nvidia.com/lbo/miles/-/merge_requests/4) | This directory: the run log, the tools, the retrospective |
-| [lbo/sglang!1](https://gitlab-master.nvidia.com/lbo/sglang/-/merge_requests/1) | MXFP4 kernel-layout hot reload plus the confirmed TorchMemorySaver clamp-buffer fix; ready for review |
+| [lbo/sglang!1](https://gitlab-master.nvidia.com/lbo/sglang/-/merge_requests/1) | TRT-LLM MXFP4 kernel-layout hot reload plus the TorchMemorySaver clamp-buffer fix |
+| [lbo/sglang!2](https://gitlab-master.nvidia.com/lbo/sglang/-/merge_requests/2) | R3 `HashTopK` routed-expert capture, deliberately separate from !1 |
 
 The sglang MR targets `sglang-miles`, not `main`. The local release image
 reports SGLang build commit `fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1`;
-the Miles begin/end API lives on `sglang-miles`, not upstream main. Megatron
-needs no change.
+the Miles begin/end API lives on `sglang-miles`, not upstream main. The clamp
+fix itself needs no Megatron change; the direct-HF path uses the separate
+Megatron-Bridge revision listed above.
 
 Three things to know if you rebase or re-split them. The branch is based on an
 older `main` than the fork's, so `arguments.py` and `run_deepseek_v4.py` were
