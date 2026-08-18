@@ -1,0 +1,109 @@
+diff --git a/python/sglang/srt/hardware_backend/npu/moe/topk.py b/python/sglang/srt/hardware_backend/npu/moe/topk.py
+index d594980382..ae5b6dda8e 100644
+--- a/python/sglang/srt/hardware_backend/npu/moe/topk.py
++++ b/python/sglang/srt/hardware_backend/npu/moe/topk.py
+@@ -124,6 +124,10 @@ def fused_topk_npu(
+     if expert_location_dispatch_info is not None:
+         topk_ids = topk_ids_logical_to_physical(topk_ids, expert_location_dispatch_info)
+     get_global_expert_distribution_recorder().on_select_experts(topk_ids=topk_ids)
+-    capture_routed_experts_if_allowed(topk_config, layer_id, topk_ids)
++    capture_routed_experts_if_allowed(
++        topk_config.allow_routed_experts_capture,
++        layer_id,
++        topk_ids,
++    )
+ 
+     return StandardTopKOutput(topk_weights, topk_ids, router_logits)
+diff --git a/python/sglang/srt/layers/moe/hash_topk.py b/python/sglang/srt/layers/moe/hash_topk.py
+index 42a2caa903..73f0568e49 100644
+--- a/python/sglang/srt/layers/moe/hash_topk.py
++++ b/python/sglang/srt/layers/moe/hash_topk.py
+@@ -19,6 +19,7 @@ from sglang.srt.layers.moe.topk import (
+     TopKConfig,
+     _mask_topk_ids_padded_region,
+     _zero_topk_weights_padded_region,
++    capture_routed_experts_if_allowed,
+     remap_topk_for_per_rank_shared_slots,
+ )
+ from sglang.srt.layers.moe.utils import has_per_rank_fused_shared_slots
+@@ -58,6 +59,7 @@ class HashTopK(nn.Module):
+ 
+         self.num_experts = num_experts
+         self.topk = topk
++        self.allow_routed_experts_capture = True
+         self.routed_scaling_factor = routed_scaling_factor
+         self.num_fused_shared_experts = num_fused_shared_experts
+         self.score_func = scoring_func
+@@ -208,6 +210,12 @@ class HashTopK(nn.Module):
+         if self.apply_routed_scaling_factor_on_output:
+             topk_weights = topk_weights * self.routed_scaling_factor
+ 
++        capture_routed_experts_if_allowed(
++            self.allow_routed_experts_capture,
++            self.layer_id,
++            topk_ids,
++        )
++
+         num_fused_shared_experts = self.num_fused_shared_experts
+         log2phy_prob = None
+         if (
+diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
+index 9c47af75de..08d9279fb9 100644
+--- a/python/sglang/srt/layers/moe/topk.py
++++ b/python/sglang/srt/layers/moe/topk.py
+@@ -1796,7 +1796,7 @@ def remap_topk_for_per_rank_shared_slots(
+ 
+ 
+ def capture_routed_experts_if_allowed(
+-    topk_config: TopKConfig,
++    allow_capture: bool,
+     layer_id: Optional[int],
+     topk_ids: torch.Tensor,
+ ) -> None:
+@@ -1805,7 +1805,7 @@ def capture_routed_experts_if_allowed(
+     Routing all backends through here keeps the draft-side opt-out from being
+     bypassed by an inlined capturer call.
+     """
+-    if not topk_config.allow_routed_experts_capture:
++    if not allow_capture:
+         return
+     if (cap := get_global_experts_capturer()) is not None:
+         cap.capture(
+@@ -1830,7 +1830,11 @@ def _post_process_topk_ids(
+     fused_shared_experts_scaling_factor = (
+         topk_config.fused_shared_experts_scaling_factor
+     )
+-    capture_routed_experts_if_allowed(topk_config, layer_id, topk_ids)
++    capture_routed_experts_if_allowed(
++        topk_config.allow_routed_experts_capture,
++        layer_id,
++        topk_ids,
++    )
+     recorder_topk_ids = None
+     if _is_cuda:
+         # LP path: solve LP outside torch.compile (the solver contains an
+diff --git a/python/sglang/srt/state_capturer/routed_experts.py b/python/sglang/srt/state_capturer/routed_experts.py
+index 65f6cc052e..b146cc3487 100644
+--- a/python/sglang/srt/state_capturer/routed_experts.py
++++ b/python/sglang/srt/state_capturer/routed_experts.py
+@@ -159,14 +159,15 @@ def extract_routed_experts_from_meta_info(data):
+ def disable_routed_experts_capture_for_draft(model: Any) -> None:
+     """Opt every draft MoE ``TopK`` out of routed-experts (R3) capture.
+ 
+-    Capture is target-only; a draft ``TopK`` must never write the target's
+-    process-global buffer. ``HashTopK`` has no ``topk_config`` and never
+-    captures, so it is left untouched.
++    Capture is target-only; draft ``TopK`` and ``HashTopK`` modules must never
++    write the target's process-global buffer.
+     """
+-    # Lazy import: ``layers.moe.topk`` imports ``get_global_experts_capturer``
+-    # from this module, so a top-level import here would be circular.
++    # Lazy imports avoid circular dependencies with the capture call sites.
++    from sglang.srt.layers.moe.hash_topk import HashTopK
+     from sglang.srt.layers.moe.topk import TopK
+ 
+     for module in model.modules():
+         if isinstance(module, TopK):
+             module.topk_config.allow_routed_experts_capture = False
++        elif isinstance(module, HashTopK):
++            module.allow_routed_experts_capture = False

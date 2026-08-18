@@ -37,6 +37,7 @@ offload_train_disk_dir=${OFFLOAD_TRAIN_DISK_DIR:-/raid/scratch/lbo-miles-train-o
 offload_train_disk_chunk_mb=${OFFLOAD_TRAIN_DISK_CHUNK_MB:-256}
 mode=${MODE:-debug_minimal}
 enable_eval=${ENABLE_EVAL:-0}
+enable_r3=${ENABLE_R3:-1}
 log_passrate=${LOG_PASSRATE:-0}
 wandb_run_id=${WANDB_RUN_ID:-}
 skip_saving=${SKIP_SAVING:-1}
@@ -90,6 +91,11 @@ esac
 eval_args="--enable-eval"
 if [[ "${enable_eval}" == 0 ]]; then
   eval_args="--no-enable-eval"
+fi
+
+r3_args="--enable-r3"
+if [[ "${enable_r3}" == 0 ]]; then
+  r3_args="--no-enable-r3"
 fi
 
 log_passrate_args=""
@@ -150,6 +156,7 @@ export OFFLOAD_TRAIN_DISK_DIR="${offload_train_disk_dir}"
 export OFFLOAD_TRAIN_DISK_CHUNK_MB="${offload_train_disk_chunk_mb}"
 export MODE="${mode}"
 export EVAL_ARGS="${eval_args}"
+export R3_ARGS="${r3_args}"
 export LOG_PASSRATE_ARGS="${log_passrate_args}"
 export WANDB_RUN_ID_ARGS="${wandb_run_id_args}"
 export SAVE_ARGS="${save_args}"
@@ -166,7 +173,7 @@ HEAD_NODE=$(scontrol show hostnames "${SLURM_NODELIST}" | head -n1)
 export SLURM_EXPORT_ENV=ALL
 
 echo "job=${SLURM_JOB_ID} run_id=${run_id} model=${model_name} precision=${precision} init_model_source=${init_model_source} rollout_weight_source=${rollout_weight_source} nodes=${SLURM_JOB_NUM_NODES}"
-echo "head_node=${HEAD_NODE} code=${code} megatron_bridge_path=${megatron_bridge_path:-image-default} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none} container_image=${container_image}"
+echo "head_node=${HEAD_NODE} code=${code} megatron_bridge_path=${megatron_bridge_path:-image-default} num_rollout=${num_rollout} update_weight_buffer_size=${update_weight_buffer_size} sglang_mem_fraction_static=${sglang_mem_fraction_static} nccl_algo=${nccl_algo} nccl_launch_order_implicit=${nccl_launch_order_implicit} optimizer_offload=${optimizer_offload} rematerialize_param=${rematerialize_param} offload_train_target=${offload_train_target} offload_train_disk_dir=${offload_train_disk_dir} mode=${mode} eval=${enable_eval} r3=${enable_r3} log_passrate=${log_passrate} skip_saving=${skip_saving} use_fault_tolerance=${use_fault_tolerance} wandb_run_id=${wandb_run_id:-auto} sglang_patch_file=${sglang_patch_file:-none} container_image=${container_image}"
 
 srun --kill-on-bad-exit=1 \
   --container-image="${CONTAINER_IMAGE}" \
@@ -280,6 +287,7 @@ srun --kill-on-bad-exit=1 \
         ${OPTIMIZER_OFFLOAD_ARGS} \
         ${PRECISION_ARGS} \
         ${EVAL_ARGS} \
+        ${R3_ARGS} \
         ${SAVE_ARGS} \
         ${FAULT_TOLERANCE_ARGS} \
         ${BACKEND_ARGS} \
