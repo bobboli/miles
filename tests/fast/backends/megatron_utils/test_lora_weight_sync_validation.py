@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.backends.megatron_utils.sglang import FlattenedTensorBucket
 from miles.backends.megatron_utils.update_weight.common import _check_weight_sync_results
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
     UpdateWeightFromDistributed,
@@ -26,6 +27,7 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
 )
 from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import (
     UpdateWeightFromTensor,
+    _ReusableIpcTensorBucket,
     _reclaim_colocated_ipc_storage,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
@@ -126,6 +128,34 @@ def test_reclaim_colocated_ipc_storage_releases_driver_memory():
     collect.assert_called_once_with()
     ipc_collect.assert_called_once_with()
     empty_cache.assert_called_once_with()
+
+
+def test_reusable_ipc_bucket_preserves_storage_and_mixed_dtype_values():
+    bucket = _ReusableIpcTensorBucket(capacity_bytes=256)
+    first = [
+        ("odd", torch.arange(3, dtype=torch.uint8)),
+        ("bf16", torch.arange(6, dtype=torch.bfloat16).reshape(2, 3)),
+    ]
+    first_flat, first_metadata = bucket.pack(first)
+    storage_ptr = first_flat.untyped_storage().data_ptr()
+
+    reconstructed = FlattenedTensorBucket(
+        flattened_tensor=first_flat,
+        metadata=first_metadata,
+    ).reconstruct_tensors()
+    for (expected_name, expected), (actual_name, actual) in zip(first, reconstructed, strict=True):
+        assert actual_name == expected_name
+        assert torch.equal(actual, expected)
+
+    second = [("fp32", torch.arange(8, dtype=torch.float32))]
+    second_flat, second_metadata = bucket.pack(second)
+    assert second_flat.untyped_storage().data_ptr() == storage_ptr
+    reconstructed = FlattenedTensorBucket(
+        flattened_tensor=second_flat,
+        metadata=second_metadata,
+    ).reconstruct_tensors()
+    assert reconstructed[0][0] == second[0][0]
+    assert torch.equal(reconstructed[0][1], second[0][1])
 
 
 # ---------------------------------------------------------------------------

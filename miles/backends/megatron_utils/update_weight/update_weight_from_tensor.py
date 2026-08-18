@@ -22,7 +22,7 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
-from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+from ..sglang import FlattenedTensorBucket, FlattenedTensorMetadata, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -36,11 +36,62 @@ logger = logging.getLogger(__name__)
 
 
 def _reclaim_colocated_ipc_storage() -> None:
-    """Release a completed CUDA-IPC bucket before allocating the next one."""
+    """Release completed one-shot CUDA-IPC storage."""
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.ipc_collect()
     torch.cuda.empty_cache()
+
+
+def _release_colocated_bucket_temporaries() -> None:
+    """Release conversion temporaries while keeping reusable IPC storage alive."""
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+class _ReusableIpcTensorBucket:
+    """Pack successive updates into one stable CUDA-IPC allocation."""
+
+    def __init__(self, capacity_bytes: int) -> None:
+        self._capacity_bytes = capacity_bytes
+        self._buffer: torch.Tensor | None = None
+
+    def pack(self, named_tensors: list[tuple[str, torch.Tensor]]) -> tuple[torch.Tensor, list]:
+        if not named_tensors:
+            raise ValueError("Cannot create empty tensor bucket")
+        if FlattenedTensorMetadata is None:
+            raise RuntimeError("The installed SGLang does not expose flattened tensor metadata")
+
+        device = named_tensors[0][1].device
+        metadata = []
+        current_idx = 0
+        for name, tensor in named_tensors:
+            if tensor.device != device:
+                raise ValueError("All tensors in an IPC bucket must be on the same device")
+            alignment = tensor.element_size()
+            current_idx = (current_idx + alignment - 1) // alignment * alignment
+            numel = tensor.numel() * alignment
+            metadata.append(
+                FlattenedTensorMetadata(
+                    name=name,
+                    shape=tensor.shape,
+                    dtype=tensor.dtype,
+                    start_idx=current_idx,
+                    end_idx=current_idx + numel,
+                    numel=numel,
+                )
+            )
+            current_idx += numel
+
+        if self._buffer is None or self._buffer.device != device or self._buffer.numel() < current_idx:
+            capacity = max(self._capacity_bytes, current_idx)
+            self._buffer = torch.empty(capacity, dtype=torch.uint8, device=device)
+
+        flattened_tensor = self._buffer[:current_idx]
+        for (_, tensor), meta in zip(named_tensors, metadata, strict=True):
+            flattened_tensor[meta.start_idx : meta.end_idx].copy_(tensor.flatten().view(torch.uint8))
+        return flattened_tensor, metadata
 
 
 def _pp_assemble_full_adapter(
@@ -111,6 +162,16 @@ class UpdateWeightFromTensor:
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.is_lora = is_lora
+        self._ipc_staging_bucket = (
+            _ReusableIpcTensorBucket(args.update_weight_buffer_size)
+            if (
+                getattr(args, "colocate", False)
+                and getattr(args, "offload_train", False)
+                and FlattenedTensorMetadata is not None
+                and getattr(FlattenedTensorBucket, "supports_multi_dtypes", False)
+            )
+            else None
+        )
         self._hf_weight_iterator = HfWeightIteratorBase.create(
             args=args,
             model=model,
@@ -242,6 +303,12 @@ class UpdateWeightFromTensor:
         out = self.__dict__.pop("update_weight_metrics", {})
         return out
 
+    def _release_colocated_base_bucket(self) -> None:
+        if self._ipc_staging_bucket is None:
+            _reclaim_colocated_ipc_storage()
+        else:
+            _release_colocated_bucket_temporaries()
+
     @torch.no_grad()
     def update_weights(self) -> None:
         """
@@ -284,7 +351,7 @@ class UpdateWeightFromTensor:
                 dist.barrier(group=get_gloo_group())
                 del hf_named_tensors, long_lived_tensors, refs, results
                 if getattr(self.args, "colocate", False) and getattr(self.args, "offload_train", False):
-                    _reclaim_colocated_ipc_storage()
+                    self._release_colocated_base_bucket()
 
             mm_tower_tensors = self._mm_tower_named_tensors()
             if mm_tower_tensors is not None:
@@ -320,8 +387,7 @@ class UpdateWeightFromTensor:
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
             del accumulated_named_tensors
-            torch.cuda.ipc_collect()
-            torch.cuda.empty_cache()
+            _reclaim_colocated_ipc_storage()
 
             if not self._lora_base_synced:
                 self._lora_base_synced = True
@@ -340,10 +406,7 @@ class UpdateWeightFromTensor:
 
         del megatron_local_weights
         if not skip_base_sync and getattr(self.args, "colocate", False) and getattr(self.args, "offload_train", False):
-            # IPC-sent allocations remain live until Python references and
-            # consumer handles are both gone. Collect IPC before returning the
-            # resulting inactive blocks to the CUDA driver.
-            _reclaim_colocated_ipc_storage()
+            self._release_colocated_base_bucket()
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
         """Frozen vision/audio tower tensors to append to every base sync (see
@@ -397,6 +460,7 @@ class UpdateWeightFromTensor:
             ipc_gather_group=self._ipc_gather_group,
             selector=weight_update_selector(self.args),
             weight_version=self.weight_version,
+            ipc_staging_bucket=self._ipc_staging_bucket,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
@@ -485,6 +549,7 @@ def _send_to_colocated_engine(
     check_equal: bool = False,
     selector: str = "all",
     repack_lora_for_ipc: bool = False,
+    ipc_staging_bucket: _ReusableIpcTensorBucket | None = None,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -512,10 +577,15 @@ def _send_to_colocated_engine(
 
     serialized_tensors: list = [serialized_lora] if is_lora else []
     for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
-        flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+        if ipc_staging_bucket is None:
+            flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+            flattened_tensor = flattened_tensor_bucket.get_flattened_tensor()
+            metadata = flattened_tensor_bucket.get_metadata()
+        else:
+            flattened_tensor, metadata = ipc_staging_bucket.pack(named_tensors)
         flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": flattened_tensor_bucket.get_metadata(),
+            "flattened_tensor": flattened_tensor,
+            "metadata": metadata,
         }
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))

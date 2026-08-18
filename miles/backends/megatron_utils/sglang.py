@@ -24,6 +24,11 @@ try:
 except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
+try:
+    from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorMetadata  # type: ignore[import]
+except ImportError:
+    FlattenedTensorMetadata = None
+
 __all__ = [
     "per_block_cast_to_fp8",
     "quant_weight_ue8m0",
@@ -32,4 +37,5 @@ __all__ = [
     "monkey_patch_torch_reductions",
     "MultiprocessingSerializer",
     "FlattenedTensorBucket",
+    "FlattenedTensorMetadata",
 ]
