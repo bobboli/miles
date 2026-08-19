@@ -277,6 +277,32 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+class TestSaveRetainInterval:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_accepts_multiple_of_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-interval", "5", "--save-retain-interval", "20"])
+
+        miles_validate_args(args)
+
+        assert args.save_retain_interval == 20
+
+    def test_requires_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-retain-interval", "20"])
+
+        with pytest.raises(AssertionError, match="--save-interval.*required"):
+            miles_validate_args(args)
+
+    def test_requires_multiple_of_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-interval", "6", "--save-retain-interval", "20"])
+
+        with pytest.raises(AssertionError, match="must be a multiple"):
+            miles_validate_args(args)
+
+
 class TestBridgeCheckpointResume:
     def _validate(self, load_path: str, ref_path: str) -> argparse.Namespace:
         parser = argparse.ArgumentParser()
