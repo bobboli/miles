@@ -3,6 +3,7 @@ import argparse
 import inspect
 import logging
 from contextlib import nullcontext
+from functools import partial
 from typing import Literal
 
 import torch
@@ -76,6 +77,17 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # attention kernel selection
     provider.attention_backend = args.attention_backend
+
+    # explicit model spec overrides the bridge's default layer spec
+    if args.spec is not None:
+        transformer_layer_spec = import_module(args.spec)
+        provider.transformer_layer_spec = (
+            partial(transformer_layer_spec, args) if callable(transformer_layer_spec) else transformer_layer_spec
+        )
+        provider.experimental_attention_variant = args.experimental_attention_variant
+
+    # optional model components follow the launched training configuration
+    provider.mtp_num_layers = args.mtp_num_layers
 
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
