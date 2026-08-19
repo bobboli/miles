@@ -1,7 +1,31 @@
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from miles_plugins.models.deepseek_v4.deepseek_v4 import get_dsv4_spec
+
+
+def test_dsv4_spec_import_does_not_require_optional_gpu_kernels():
+    code = textwrap.dedent(
+        """
+        import builtins
+
+        original_import = builtins.__import__
+
+        def import_without_optional_gpu_kernels(name, *args, **kwargs):
+            blocked_packages = ("tile_kernels", "tilelang")
+            if any(name == package or name.startswith(f"{package}.") for package in blocked_packages):
+                raise ModuleNotFoundError(name)
+            return original_import(name, *args, **kwargs)
+
+        builtins.__import__ = import_without_optional_gpu_kernels
+        import miles_plugins.models.deepseek_v4.deepseek_v4
+        """
+    )
+
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_get_dsv4_spec_applies_plugin_runtime_config():

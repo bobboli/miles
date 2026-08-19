@@ -1,13 +1,13 @@
 import torch
 
-from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_bwd as sparse_mla_bwd
-from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_fwd as sparse_mla_fwd
-
 
 class DeepSeekV4SparseAttention(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, q, kv, attn_sink, topk_idxs, sm_scale=None):
+        # TileLang is an optional GPU dependency that is only required when this kernel runs.
+        from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_fwd as sparse_mla_fwd
+
         o, lse = sparse_mla_fwd.sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=sm_scale)
 
         ctx.save_for_backward(q, kv, attn_sink, topk_idxs, o.clone(), lse)
@@ -17,6 +17,8 @@ class DeepSeekV4SparseAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, do):
+        from miles_plugins.models.deepseek_v4.ops.kernel import tilelang_sparse_mla_bwd as sparse_mla_bwd
+
         q, kv, attn_sink, topk_idxs, o, lse = ctx.saved_tensors
         sm_scale = ctx.sm_scale
 

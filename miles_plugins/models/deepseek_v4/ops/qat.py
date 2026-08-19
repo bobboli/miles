@@ -1,9 +1,5 @@
 import torch
 
-from tile_kernels.quant import per_token_cast_back
-
-from .kernel.act_quant import act_quant
-
 
 def fp8_simulate(x: torch.Tensor, block_size: int):
     """Simulate per-token FP8 (E4M3) cast + dequant with UE8M0 scaling.
@@ -12,6 +8,10 @@ def fp8_simulate(x: torch.Tensor, block_size: int):
     through ``deepseek-ai/TileKernels`` so we share the same FP8 kernels with
     the rest of the DeepSeek stack.
     """
+    from tile_kernels.quant import per_token_cast_back
+
+    from miles_plugins.models.deepseek_v4.ops.kernel.act_quant import act_quant
+
     x_c = x.contiguous()
     y, scale = act_quant(x_c, block_size, "ue8m0")
 

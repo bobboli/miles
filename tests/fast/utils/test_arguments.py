@@ -277,6 +277,70 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+class TestSaveRetainInterval:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_accepts_multiple_of_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-interval", "5", "--save-retain-interval", "20"])
+
+        miles_validate_args(args)
+
+        assert args.save_retain_interval == 20
+
+    def test_requires_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-retain-interval", "20"])
+
+        with pytest.raises(AssertionError, match="--save-interval.*required"):
+            miles_validate_args(args)
+
+    def test_requires_multiple_of_save_interval(self):
+        args = self._parse(["--save", "/tmp/checkpoint", "--save-interval", "6", "--save-retain-interval", "20"])
+
+        with pytest.raises(AssertionError, match="must be a multiple"):
+            miles_validate_args(args)
+
+
+class TestBridgeCheckpointResume:
+    def _validate(self, load_path: str, ref_path: str) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            [
+                "--megatron-to-hf-mode",
+                "bridge",
+                "--load",
+                load_path,
+                "--ref-load",
+                ref_path,
+                "--num-rollout",
+                "1",
+            ]
+            + REQUIRED_ARGS
+        )
+        miles_validate_args(args)
+        return args
+
+    def test_fresh_run_starts_at_zero_from_reference_checkpoint(self, tmp_path):
+        ref_path = str(tmp_path / "reference")
+        args = self._validate(str(tmp_path / "new-run"), ref_path)
+
+        assert args.load == ref_path
+        assert args.start_rollout_id == 0
+
+    def test_saved_checkpoint_defers_start_step_to_actor_load(self, tmp_path):
+        checkpoint_path = tmp_path / "saved-run"
+        checkpoint_path.mkdir()
+        (checkpoint_path / "latest_checkpointed_iteration.txt").write_text("7")
+
+        args = self._validate(str(checkpoint_path), str(tmp_path / "reference"))
+
+        assert args.load == str(checkpoint_path)
+        assert args.start_rollout_id is None
+
+
 def test_dynamic_global_batch_size_requires_dynamic_batch_size():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

@@ -1310,6 +1310,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--load", type=str, default=None)
             reset_arg(parser, "--save", type=str, default=None)
             reset_arg(parser, "--save-interval", type=int, default=None)
+            reset_arg(
+                parser,
+                "--save-retain-interval",
+                type=int,
+                default=None,
+                help="Iterations between checkpoints that are retained instead of replaced by the next save.",
+            )
             reset_arg(parser, "--async-save", action="store_true")
             reset_arg(
                 parser,
@@ -3050,7 +3057,7 @@ def miles_validate_args(args):
             or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
         ):
             args.load = args.ref_load or args.hf_checkpoint
-        args.start_rollout_id = 0
+            args.start_rollout_id = 0
     else:
         if (
             args.load is None
@@ -3082,6 +3089,13 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    if args.save_retain_interval is not None:
+        assert args.save_interval is not None, "'--save-interval' is required when save_retain_interval is set."
+        assert args.save_retain_interval > 0, "'--save-retain-interval' must be greater than zero."
+        assert (
+            args.save_retain_interval % args.save_interval == 0
+        ), "'--save-retain-interval' must be a multiple of '--save-interval'."
 
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."

@@ -325,11 +325,7 @@ class UpdateWeightFromTensor:
 
         # Reclaim only after a base-weight CUDA IPC transfer when trainer
         # offload must return the colocated GPU to rollout.
-        if (
-            not skip_base_sync
-            and getattr(self.args, "colocate", False)
-            and getattr(self.args, "offload_train", False)
-        ):
+        if not skip_base_sync and getattr(self.args, "colocate", False) and getattr(self.args, "offload_train", False):
             # Reclaim inactive IPC blocks before rollout can use the GPU again.
             torch.cuda.synchronize()
             torch.cuda.ipc_collect()
