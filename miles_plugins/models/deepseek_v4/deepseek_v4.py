@@ -344,6 +344,14 @@ def get_dsv4_spec(args, config, vp_stage):
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.dsv4_o_groups = args.dsv4_o_groups
+    config.dsv4_o_lora_rank = args.dsv4_o_lora_rank
+    config.dsv4_window_size = args.dsv4_window_size
+    config.dsv4_compress_ratios = args.dsv4_compress_ratios
+    config.dsv4_compress_rope_theta = args.dsv4_compress_rope_theta
+    config.dsv4_hc_mult = args.dsv4_hc_mult
+    config.dsv4_hc_sinkhorn_iters = args.dsv4_hc_sinkhorn_iters
+    config.dsv4_hc_eps = args.dsv4_hc_eps
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

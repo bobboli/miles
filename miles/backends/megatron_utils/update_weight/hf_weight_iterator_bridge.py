@@ -1,6 +1,8 @@
 import dataclasses
 import json
 import os
+from itertools import groupby
+from pathlib import Path
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
@@ -18,7 +20,8 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         from megatron.bridge import AutoBridge
 
-        self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+        bridge_checkpoint = _select_bridge_checkpoint(self.args)
+        self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
 
         if (
             self.quantization_config is not None
@@ -100,12 +103,29 @@ def _load_quantized_param_basenames(hf_checkpoint):
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
+def _select_bridge_checkpoint(args):
+    """Use an HF trainer seed for export mappings when one is available."""
+    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
+            return candidate
+    return args.hf_checkpoint
+
+
 def _stream_atomic_units(items, atomic_update_groups):
     """Streaming counterpart of get_named_value_update_units: buffer items
-    whose megatron name matches an AtomicUpdateGroup suffix until every
-    suffix in the same (prefix, group.key) arrives, then yield together."""
+    whose Megatron name matches an AtomicUpdateGroup suffix until every
+    suffix in the same (prefix, group.key) arrives, then yield together.
+
+    Bridge export and quantization can emit several consecutive HF tensors
+    from one Megatron parameter, such as a weight and its scale. Keep those
+    derived tensors together before applying the cross-parameter groups.
+    """
     pending: dict[tuple[str, str], list] = {}
-    for hf_name, weight, megatron_name in items:
+    for megatron_name, derived_items in groupby(items, key=lambda item: item[2]):
+        derived_tensors = [(hf_name, weight) for hf_name, weight, _ in derived_items]
         match = next(
             (
                 (group, idx, suffix)
@@ -116,14 +136,15 @@ def _stream_atomic_units(items, atomic_update_groups):
             None,
         )
         if match is None:
-            yield [(hf_name, weight)]
+            yield derived_tensors
             continue
         group, idx, suffix = match
         prefix = megatron_name[: -len(suffix)]
         slots = pending.setdefault((prefix, group.key), [None] * len(group.suffixes))
-        slots[idx] = (hf_name, weight)
+        assert slots[idx] is None, f"Non-consecutive tensors for Megatron parameter {megatron_name}"
+        slots[idx] = derived_tensors
         if None not in slots:
-            yield list(slots)
+            yield [tensor for slot in slots for tensor in slot]
             del pending[(prefix, group.key)]
     assert not pending, f"Incomplete atomic update groups at end of stream: {sorted(pending)}"
 
