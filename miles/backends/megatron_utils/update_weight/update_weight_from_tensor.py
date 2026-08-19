@@ -269,6 +269,8 @@ class UpdateWeightFromTensor:
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
+                # Keep IPC storage alive until every engine imports this bucket.
+                dist.barrier(group=get_gloo_group())
                 del long_lived_tensors
 
             mm_tower_tensors = self._mm_tower_named_tensors()
@@ -279,6 +281,7 @@ class UpdateWeightFromTensor:
                 refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
+                dist.barrier(group=get_gloo_group())
                 del long_lived_tensors, mm_tower_tensors
 
         if self.is_lora:
@@ -303,6 +306,7 @@ class UpdateWeightFromTensor:
             refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=True)
+            dist.barrier(group=get_gloo_group())
             del long_lived_tensors
             del accumulated_named_tensors
             torch.cuda.ipc_collect()
@@ -317,6 +321,22 @@ class UpdateWeightFromTensor:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 end_weight_update(self.rollout_engines)
+        dist.barrier(group=get_gloo_group())
+
+        # Reclaim only after a base-weight CUDA IPC transfer when trainer
+        # offload must return the colocated GPU to rollout.
+        if (
+            not skip_base_sync
+            and getattr(self.args, "colocate", False)
+            and getattr(self.args, "offload_train", False)
+        ):
+            # Reclaim inactive IPC blocks before rollout can use the GPU again.
+            torch.cuda.synchronize()
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
+        dist.barrier(group=get_gloo_group())
+
+        if rank == 0:
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
