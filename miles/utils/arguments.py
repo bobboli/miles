@@ -2170,6 +2170,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
+                "--rollout-fp4-experts",
+                action="store_true",
+                help=(
+                    "The rollout checkpoint carries packed MXFP4 routed experts, so weight "
+                    "updates must quantize those to MXFP4 rather than block-scaled FP8."
+                ),
+            )
+            parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
                 default="all",
