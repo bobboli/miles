@@ -147,3 +147,20 @@ class TestDeepseekV32Alias:
             f"{type(cfg).__name__} not registered with AutoModelForCausalLM — "
             f"AutoModelForCausalLM.from_config(cfg) will raise ValueError."
         )
+
+
+class TestDeepseekV4NativeConfig:
+    def test_deepseek_v4_uses_transformers_native_config(self, tmp_path):
+        from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+
+        from miles.utils.hf_config import load_hf_config
+
+        config_dict = DeepseekV4Config().to_dict()
+        config_dict["model_type"] = "deepseek_v4"
+        _write_config_json(str(tmp_path), config_dict)
+
+        cfg = load_hf_config(str(tmp_path))
+
+        assert type(cfg) is DeepseekV4Config
+        assert getattr(cfg, "n_group", None) is None
+        assert getattr(cfg, "topk_group", None) is None
