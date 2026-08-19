@@ -9,10 +9,6 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
-from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
-    _make_causal_cu_seqlens,
-    batched_indexer_fwd,
-)
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
@@ -81,6 +77,12 @@ class V4Indexer(MegatronModule):
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64
         """
+
+        # TileLang is an optional GPU dependency that is only required when this kernel runs.
+        from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
+            _make_causal_cu_seqlens,
+            batched_indexer_fwd,
+        )
 
         # =========================================
         # Gather inputs if SP is enabled

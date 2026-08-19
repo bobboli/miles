@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
 import pytest
-from megatron.bridge.models.conversion.param_mapping import AutoMapping, ColumnParallelMapping, ReplicatedMapping
 
+pytest.importorskip("megatron.bridge.models.conversion.param_mapping")
 pytest.importorskip("megatron.bridge.models.deepseek.deepseek_v4_bridge")
+
+from megatron.bridge.models.conversion.param_mapping import AutoMapping, ColumnParallelMapping, ReplicatedMapping
 
 from miles_plugins.megatron_bridge.deepseek_v4 import MilesDeepSeekV4Bridge
 
