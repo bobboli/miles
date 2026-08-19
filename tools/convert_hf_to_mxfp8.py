@@ -25,7 +25,6 @@ from tqdm import tqdm
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
-
 SKIP_WEIGHT_SUBSTRINGS = (
     "layernorm",
     "embed",
@@ -344,6 +343,7 @@ def convert_mxfp8(
     if os.path.exists(config_path):
         cfg = json.load(open(config_path))
         cfg["quantization_config"] = quantization_config
+        cfg["expert_dtype"] = "fp8"
         json.dump(cfg, open(os.path.join(output_path, "config.json"), "w"), indent=2)
 
     index_dict = {
