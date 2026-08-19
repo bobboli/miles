@@ -190,11 +190,8 @@ def rollout_fp4_experts(args: ScriptArgs) -> bool:
 
     Only the official Flash release ships them, and only when it is served
     directly; the preview and every converted rollout checkpoint hold unpacked
-    FP8 experts instead. ``SGLANG_DSV4_FP4_DEQUANT`` unpacks them at load, so
-    the release then holds FP8 too and updates have to arrive that way.
+    FP8 experts instead.
     """
-    if os.environ.get("SGLANG_DSV4_FP4_DEQUANT") == "1":
-        return False
     return args.rollout_fp8 and args.model_name == "DeepSeek-V4-Flash-0731"
 
 
