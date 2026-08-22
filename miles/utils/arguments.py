@@ -292,6 +292,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Top-k backend for Miles DSA indexer.",
             )
             parser.add_argument(
+                "--dsv4-mxfp4-qat",
+                action="store_true",
+                help=(
+                    "Fake-quantize DeepSeek V4 routed-expert weights to MXFP4 during Megatron forwards. "
+                    "The trainable parameters and optimizer states retain their configured precision."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,

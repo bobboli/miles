@@ -352,6 +352,11 @@ def get_dsv4_spec(args, config, vp_stage):
     config.dsv4_hc_mult = args.dsv4_hc_mult
     config.dsv4_hc_sinkhorn_iters = args.dsv4_hc_sinkhorn_iters
     config.dsv4_hc_eps = args.dsv4_hc_eps
+    config.dsv4_mxfp4_qat = getattr(args, "dsv4_mxfp4_qat", False)
+    if config.dsv4_mxfp4_qat:
+        from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import install_dsv4_mxfp4_qat
+
+        install_dsv4_mxfp4_qat()
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
