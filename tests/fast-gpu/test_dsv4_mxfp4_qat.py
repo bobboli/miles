@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.mxfp4 import E2M1_VALUES, MXFP4_GROUP_SIZE, mxfp4_quantize
 from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
@@ -9,7 +10,6 @@ from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
     mxfp4_fake_quantize_ste,
     mxfp4_quantize_dequantize,
 )
-from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"])
 
@@ -40,9 +40,7 @@ def test_mxfp4_qat_matches_rollout_codec(dtype):
 
 def test_mxfp4_qat_matches_rollout_codec_at_boundaries_and_zero():
     boundaries = torch.tensor([0.0, 0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 6.0], device="cuda")
-    row = torch.cat(
-        (boundaries, -boundaries, torch.zeros(MXFP4_GROUP_SIZE - 2 * boundaries.numel(), device="cuda"))
-    )
+    row = torch.cat((boundaries, -boundaries, torch.zeros(MXFP4_GROUP_SIZE - 2 * boundaries.numel(), device="cuda")))
     weight = torch.stack((row, torch.zeros_like(row)))
 
     actual = mxfp4_quantize_dequantize(weight)
