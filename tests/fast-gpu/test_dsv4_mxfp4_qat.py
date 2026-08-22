@@ -4,6 +4,7 @@ import pytest
 import torch
 from tests.ci.ci_register import register_cuda_ci
 
+from miles.backends.megatron_utils.megatron_to_hf.deepseekv4 import convert_deepseekv4_to_hf
 from miles.utils.mxfp4 import E2M1_VALUES, MXFP4_GROUP_SIZE, mxfp4_quantize
 from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
     _wrap_get_weight_tensors,
@@ -30,12 +31,35 @@ def _dequantize_reference(packed: torch.Tensor, scale: torch.Tensor) -> torch.Te
 def test_mxfp4_qat_matches_rollout_codec(dtype):
     torch.manual_seed(0)
     weight = torch.randn((67, 4 * MXFP4_GROUP_SIZE), device="cuda", dtype=dtype)
+    original = weight.clone()
 
     actual = mxfp4_quantize_dequantize(weight)
     packed, scale = mxfp4_quantize(weight)
     expected = _dequantize_reference(packed, scale).to(dtype)
 
     assert torch.equal(actual, expected)
+    assert torch.equal(weight, original)
+
+
+@pytest.mark.parametrize(
+    ("linear_name", "shape"),
+    [
+        ("linear_fc1", (6 * MXFP4_GROUP_SIZE, 4 * MXFP4_GROUP_SIZE)),
+        ("linear_fc2", (4 * MXFP4_GROUP_SIZE, 3 * MXFP4_GROUP_SIZE)),
+    ],
+)
+def test_mxfp4_qat_grid_matches_rollout_after_dsv4_layout_conversion(linear_name, shape):
+    torch.manual_seed(1)
+    megatron_name = f"module.module.decoder.layers.4.mlp.experts.{linear_name}.weight7"
+    weight = torch.randn(shape, device="cuda", dtype=torch.bfloat16)
+
+    qat_converted = dict(convert_deepseekv4_to_hf(None, megatron_name, mxfp4_quantize_dequantize(weight)))
+    rollout_converted = convert_deepseekv4_to_hf(None, megatron_name, weight)
+
+    for hf_name, hf_weight in rollout_converted:
+        packed, scale = mxfp4_quantize(hf_weight)
+        expected = _dequantize_reference(packed, scale).to(weight.dtype)
+        assert torch.equal(qat_converted[hf_name], expected)
 
 
 def test_mxfp4_qat_matches_rollout_codec_at_boundaries_and_zero():
