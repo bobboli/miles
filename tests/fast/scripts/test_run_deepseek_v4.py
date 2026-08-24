@@ -108,3 +108,21 @@ def test_trainer_owned_rollout_paths_select_only_source_and_schema(tmp_path):
     assert run_deepseek_v4._rollout_checkpoint_path(p1) == str(tmp_path / "DeepSeek-V4-Flash-0731-MXFP8-schema")
     assert run_deepseek_v4._trainer_checkpoint_path(p2) == str(source)
     assert run_deepseek_v4._rollout_checkpoint_path(p2) == str(source)
+
+
+def test_p3_enables_mxfp4_qat_for_mxfp8_train_and_fp4_rollout(tmp_path, monkeypatch):
+    args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    args.dsv4_mxfp4_qat = True
+    args.skip_saving = True
+    source = tmp_path / "DeepSeek-V4-Flash-0731"
+    source.mkdir()
+    (source / "config.json").write_text('{"expert_dtype":"fp4"}', encoding="utf-8")
+    execute_train = Mock()
+    monkeypatch.setattr(run_deepseek_v4.U, "execute_train", execute_train)
+
+    run_deepseek_v4._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    assert "--dsv4-mxfp4-qat" in train_args
+    assert "--fp8-recipe mxfp8" in train_args
+    assert "--rollout-fp4-experts" in train_args
