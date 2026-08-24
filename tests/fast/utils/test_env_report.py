@@ -11,12 +11,14 @@ import pytest
 from miles.utils.env_report import (
     ENV_REPORT_PREFIX,
     EditablePackageInfo,
+    GitRepoInfo,
     NodeEnvReport,
     _collect_git_info,
     _collect_pip_info,
     _is_editable,
     _parse_pip_entry,
     collect_and_print_node_env_report,
+    collect_code_provenance,
     decode_env_report,
 )
 
@@ -136,6 +138,128 @@ class TestCollectPipInfo:
         passed_env = mock_run.call_args.kwargs.get("env")
         assert passed_env is not None, "subprocess.run must be called with explicit env"
         assert "PYTHONPATH" not in passed_env
+
+
+class TestCollectCodeProvenance:
+    @pytest.fixture(autouse=True)
+    def _clear_pythonpath(self, monkeypatch) -> None:
+        monkeypatch.setenv("PYTHONPATH", "")
+
+    def test_records_source_packages_and_core_installed_versions(self) -> None:
+        installed = [
+            *_SAMPLE_PIP_INSPECT["installed"],
+            {"metadata": {"name": "Megatron_Core", "version": "0.14.0"}},
+        ]
+        with patch("miles.utils.env_report._inspect_installed_packages", return_value=installed):
+            provenance = collect_code_provenance()
+
+        assert provenance["miles"] == {
+            "version": "0.2.1",
+            "source_type": "editable",
+            "location": "/workspace/miles",
+            "source_url": None,
+            "commit": None,
+            "dirty": None,
+            "diff_stat": None,
+        }
+        assert provenance["megatron-core"]["version"] == "0.14.0"
+        assert provenance["megatron-core"]["source_type"] == "installed"
+        assert provenance["megatron-core"]["commit"] is None
+        assert "torch" not in provenance
+        assert "numpy" not in provenance
+
+    def test_records_vcs_commit_and_removes_url_credentials(self) -> None:
+        installed = [
+            {
+                "metadata": {"name": "custom-package", "version": "1.2.3"},
+                "direct_url": {
+                    "url": "https://user:secret@example.com/org/repo.git?token=secret",
+                    "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                },
+            }
+        ]
+        with patch("miles.utils.env_report._inspect_installed_packages", return_value=installed):
+            provenance = collect_code_provenance()
+
+        assert provenance["custom-package"]["source_type"] == "vcs"
+        assert provenance["custom-package"]["source_url"] == "https://example.com/org/repo.git"
+        assert provenance["custom-package"]["commit"] == "abc123"
+
+    def test_does_not_treat_local_wheel_as_source_checkout(self) -> None:
+        installed = [
+            {
+                "metadata": {"name": "custom-package", "version": "1.2.3"},
+                "direct_url": {
+                    "url": "file:///build/custom-package.whl",
+                    "archive_info": {"hash": "sha256=abc123"},
+                },
+            }
+        ]
+        with patch("miles.utils.env_report._inspect_installed_packages", return_value=installed):
+            provenance = collect_code_provenance()
+
+        assert provenance == {}
+
+    def test_records_local_git_state(self) -> None:
+        git_info = GitRepoInfo(
+            package_name="sglang",
+            location="/workspace/sglang",
+            commit="deadbeef",
+            dirty=True,
+            diff_stat="file.py | 1 +",
+            remote_url="https://github.com/sgl-project/sglang.git",
+        )
+        installed = [
+            {
+                "metadata": {"name": "sglang", "version": "0.5.2"},
+                "direct_url": {
+                    "url": "file:///workspace/sglang",
+                    "dir_info": {"editable": True},
+                },
+            }
+        ]
+        with (
+            patch("miles.utils.env_report._inspect_installed_packages", return_value=installed),
+            patch("miles.utils.env_report._collect_git_info", return_value=git_info),
+        ):
+            provenance = collect_code_provenance()
+
+        assert provenance["sglang"] == {
+            "version": "0.5.2",
+            "source_type": "editable_git",
+            "location": "/workspace/sglang",
+            "source_url": "https://github.com/sgl-project/sglang.git",
+            "commit": "deadbeef",
+            "dirty": True,
+            "diff_stat": "file.py | 1 +",
+        }
+
+    def test_pythonpath_git_overrides_installed_core_package(self, monkeypatch) -> None:
+        installed = [{"metadata": {"name": "megatron-core", "version": "0.14.0"}}]
+        git_info = GitRepoInfo(
+            package_name="",
+            location="/workspace/Megatron-LM",
+            commit="deadbeef",
+            dirty=False,
+            diff_stat="",
+            remote_url="https://github.com/NVIDIA/Megatron-LM.git",
+        )
+        monkeypatch.setenv("PYTHONPATH", "/workspace/Megatron-LM")
+        with (
+            patch("miles.utils.env_report._inspect_installed_packages", return_value=installed),
+            patch("miles.utils.env_report._collect_git_info", return_value=git_info),
+        ):
+            provenance = collect_code_provenance()
+
+        assert provenance["megatron-core"] == {
+            "version": "0.14.0",
+            "source_type": "source_path_git",
+            "location": "/workspace/Megatron-LM",
+            "source_url": "https://github.com/NVIDIA/Megatron-LM.git",
+            "commit": "deadbeef",
+            "dirty": False,
+            "diff_stat": "",
+        }
 
 
 class TestDecodeEnvReport:

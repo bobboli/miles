@@ -25,10 +25,12 @@ def _args(**overrides):
 
 def test_primary_wandb_init_uses_extended_init_timeout(monkeypatch):
     init_calls = []
+    provenance = {"miles": {"version": "0.2.1", "commit": "deadbeef"}}
 
     monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: init_calls.append(kwargs))
     monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *args, **kwargs: None)
     monkeypatch.setattr(wandb_utils.wandb, "run", SimpleNamespace(id="run-id"), raising=False)
+    monkeypatch.setattr(wandb_utils, "collect_code_provenance", lambda: provenance)
 
     args = _args()
     wandb_utils.init_wandb_primary(args)
@@ -37,6 +39,7 @@ def test_primary_wandb_init_uses_extended_init_timeout(monkeypatch):
     assert settings.mode == "shared"
     assert settings.x_primary is True
     assert settings.init_timeout == 300.0
+    assert init_calls[0]["config"]["code_provenance"] == provenance
     assert args.wandb_run_id == "run-id"
 
 
