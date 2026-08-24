@@ -139,6 +139,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_mxfp8: bool = False
     rollout_expert_dtype: Literal["auto", "fp4", "fp8"] = "auto"
     dsv4_mxfp4_qat: bool = False
+    rollout_kv_cache_dtype: Literal["bfloat16", "fp8_e4m3"] = "fp8_e4m3"
+    dsv4_kv_cache_qat: bool = False
     # Override the rollout kernel selection that the precision choice implies.
     # Empty keeps the derived backend.
     sglang_moe_runner_backend: str = ""
@@ -533,13 +535,17 @@ def _train(args: ScriptArgs):
         assert args.model_name == "DeepSeek-V4-Flash-0731", "MXFP4 QAT is currently scoped to DSV4 Flash 0731."
         assert args.train_mxfp8, "MXFP4 QAT requires the P3 MXFP8 training recipe."
         assert rollout_fp4_experts, "MXFP4 QAT requires packed MXFP4 routed experts in rollout."
+    if args.dsv4_kv_cache_qat:
+        assert args.model_name == "DeepSeek-V4-Flash-0731", "KV-cache QAT is currently scoped to DSV4 Flash 0731."
+        assert args.rollout_kv_cache_dtype == "fp8_e4m3", "KV-cache QAT requires an FP8 E4M3 rollout cache."
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
     args.hf_checkpoint = rollout_checkpoint
     print(
         f"[precision] train_fp8={args.train_fp8}, rollout_fp8={args.rollout_fp8}, "
         f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}, "
-        f"rollout_expert_dtype={rollout_expert_dtype}, dsv4_mxfp4_qat={args.dsv4_mxfp4_qat}"
+        f"rollout_expert_dtype={rollout_expert_dtype}, dsv4_mxfp4_qat={args.dsv4_mxfp4_qat}, "
+        f"rollout_kv_cache_dtype={args.rollout_kv_cache_dtype}, dsv4_kv_cache_qat={args.dsv4_kv_cache_qat}"
     )
     print(
         f"running on {args.num_nodes} nodes "
@@ -672,6 +678,7 @@ def _train(args: ScriptArgs):
         f"--sglang-tp-size {sglang_tp_size} "
         f"--sglang-dp-size {sglang_dp_size} "
         f"--sglang-ep-size {sglang_ep_size} "
+        f"--sglang-kv-cache-dtype {args.rollout_kv_cache_dtype} "
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
@@ -727,6 +734,8 @@ def _train(args: ScriptArgs):
         misc_args += "--rollout-fp4-experts "
     if args.dsv4_mxfp4_qat:
         misc_args += "--dsv4-mxfp4-qat "
+    if args.dsv4_kv_cache_qat:
+        misc_args += "--dsv4-kv-cache-qat "
 
     if args.colocate:
         misc_args += "--colocate "

@@ -29,7 +29,7 @@ class V4Indexer(MegatronModule):
         self.topk_backend = config.miles_dsa_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
-        self.use_fp8_qat = config.fp8 is not None
+        self.use_kv_cache_qat = config.dsv4_kv_cache_qat
 
         if pg_collection is None:
             pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=["tp", "cp"])
@@ -110,8 +110,8 @@ class V4Indexer(MegatronModule):
         q = einops.rearrange(q, "b s ... -> s b ...")
 
         q = rotate_activation(q)
-        if self.use_fp8_qat:
-            q = fp8_simulate_qat(q, 128)
+        if self.use_kv_cache_qat:
+            q = fp8_simulate_qat(q, 128, "fp32")
 
         k = self.compressor(x)
 

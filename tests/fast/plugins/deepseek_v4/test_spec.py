@@ -40,6 +40,7 @@ def test_get_dsv4_spec_applies_plugin_runtime_config():
         dsv4_hc_sinkhorn_iters=20,
         dsv4_hc_eps=1e-6,
         dsv4_mxfp4_qat=False,
+        dsv4_kv_cache_qat=False,
     )
     config = SimpleNamespace(experimental_attention_variant="dsv4")
 
@@ -59,6 +60,7 @@ def test_get_dsv4_spec_applies_plugin_runtime_config():
     assert config.dsv4_hc_sinkhorn_iters == 20
     assert config.dsv4_hc_eps == 1e-6
     assert config.dsv4_mxfp4_qat is False
+    assert config.dsv4_kv_cache_qat is False
 
 
 def test_get_dsv4_spec_installs_mxfp4_qat_when_enabled():
@@ -73,6 +75,7 @@ def test_get_dsv4_spec_installs_mxfp4_qat_when_enabled():
         dsv4_hc_sinkhorn_iters=20,
         dsv4_hc_eps=1e-6,
         dsv4_mxfp4_qat=True,
+        dsv4_kv_cache_qat=True,
     )
     config = SimpleNamespace(experimental_attention_variant="dsv4")
 
@@ -87,3 +90,4 @@ def test_get_dsv4_spec_installs_mxfp4_qat_when_enabled():
 
     install_qat.assert_called_once_with()
     assert config.dsv4_mxfp4_qat is True
+    assert config.dsv4_kv_cache_qat is True

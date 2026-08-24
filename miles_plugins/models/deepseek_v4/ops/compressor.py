@@ -76,7 +76,7 @@ class DeepSeekV4Compressor(nn.Module):
         self.overlap = compress_ratio == 4
         self.rotate = rotate
         coff = 1 + self.overlap
-        self.use_fp8_qat = config.fp8 is not None
+        self.use_kv_cache_qat = config.dsv4_kv_cache_qat
 
         self.cp_group = cp_group
         self.cp_size = cp_group.size() if cp_group is not None else 1
@@ -161,10 +161,10 @@ class DeepSeekV4Compressor(nn.Module):
 
         if self.rotate:
             kv = rotate_activation(kv)
-            if self.use_fp8_qat:
-                kv = fp8_simulate_qat(kv, 128)
+            if self.use_kv_cache_qat:
+                kv = fp8_simulate_qat(kv, 128, "fp32")
         else:
-            if self.use_fp8_qat:
+            if self.use_kv_cache_qat:
                 kv = kv.clone()
                 kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
 

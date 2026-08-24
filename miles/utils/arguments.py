@@ -300,6 +300,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--dsv4-kv-cache-qat",
+                action="store_true",
+                help=(
+                    "Fake-quantize DeepSeek V4 attention and indexer tensors to the rollout FP8 cache codecs. "
+                    "The backward pass uses a straight-through estimator."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
