@@ -1,8 +1,8 @@
 """Block-wise FP8 activation quantization for DeepSeek-V4.
 
-Ported verbatim from deepseek-ai/DeepSeek-V4-Pro/inference/kernel.py to keep
-bit-exact parity with the upstream inference kernel. Keep this file in sync
-when DeepSeek updates the reference implementation.
+Based on deepseek-ai/DeepSeek-V4-Pro/inference/kernel.py. The scale arithmetic
+matches SGLang's DeepSeek V4 CUDA cache writers so QAT observes the same FP8
+round trip as rollout.
 
 Source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/kernel.py
 """
@@ -40,8 +40,8 @@ def fast_pow2(x):
     return T.reinterpret("float32", bits_x)
 
 
-def fast_round_scale(amax, fp8_max_inv):
-    return fast_pow2(fast_log2_ceil(amax * fp8_max_inv))
+def fast_round_scale(amax, fp8_max):
+    return fast_pow2(fast_log2_ceil(amax / fp8_max))
 
 
 @tilelang.jit(pass_configs=pass_configs)
@@ -52,7 +52,6 @@ def act_quant_kernel(
     M = T.symbolic("M")
     fp8_min = -448.0
     fp8_max = 448.0
-    fp8_max_inv = 1 / fp8_max
     num_stages = 0 if round_scale or inplace else 2
     blk_m = 32
     group_size = block_size
@@ -74,6 +73,7 @@ def act_quant_kernel(
             x_local = T.alloc_fragment((blk_m, group_size), in_dtype)
             amax_local = T.alloc_fragment((blk_m,), compute_dtype)
             s_local = T.alloc_fragment((blk_m,), compute_dtype)
+            inv_s_local = T.alloc_fragment((blk_m,), compute_dtype)
             y_local = T.alloc_fragment((blk_m, group_size), out_dtype)
             y_shared = T.alloc_shared((blk_m, group_size), out_dtype)
 
@@ -84,21 +84,23 @@ def act_quant_kernel(
                 for i in T.Parallel(blk_m):
                     amax_local[i] = T.max(amax_local[i], 1e-4)
                     if round_scale:
-                        s_local[i] = fast_round_scale(amax_local[i], fp8_max_inv)
+                        s_local[i] = fast_round_scale(amax_local[i], fp8_max)
                     else:
-                        s_local[i] = amax_local[i] * fp8_max_inv
+                        s_local[i] = amax_local[i] / fp8_max
+                    inv_s_local[i] = 1.0 / s_local[i]
                 if inplace:
                     for i, j in T.Parallel(blk_m, group_size):
                         y_local[i, j] = T.Cast(
                             out_dtype,
                             T.Cast(
-                                compute_dtype, T.Cast(out_dtype, T.clamp(x_local[i, j] / s_local[i], fp8_min, fp8_max))
+                                compute_dtype,
+                                T.Cast(out_dtype, T.clamp(x_local[i, j] * inv_s_local[i], fp8_min, fp8_max)),
                             )
                             * s_local[i],
                         )
                 else:
                     for i, j in T.Parallel(blk_m, group_size):
-                        y_local[i, j] = T.clamp(x_local[i, j] / s_local[i], fp8_min, fp8_max)
+                        y_local[i, j] = T.clamp(x_local[i, j] * inv_s_local[i], fp8_min, fp8_max)
                 for i in T.Parallel(blk_m):
                     S[pid_m * blk_m + i, pid_n] = T.Cast(scale_dtype, s_local[i])
                 T.copy(y_local, y_shared)
@@ -119,6 +121,12 @@ def act_quant(
     """
     N = x.size(-1)
     assert N % block_size == 0
+    if x.dtype == torch.bfloat16:
+        input_dtype = BF16
+    elif x.dtype == torch.float32:
+        input_dtype = FP32
+    else:
+        raise TypeError(f"act_quant only supports BF16 and FP32 inputs, got {x.dtype}")
     tl_dtype = FE8M0 if scale_dtype == torch.float8_e8m0fnu else FP32
     z = x.contiguous()
     y = torch.empty_like(z) if inplace else torch.empty_like(z, dtype=torch.float8_e4m3fn)
@@ -126,6 +134,7 @@ def act_quant(
     kernel = act_quant_kernel(
         N,
         block_size,
+        in_dtype=input_dtype,
         scale_dtype=tl_dtype,
         round_scale=scale_fmt is not None,
         inplace=inplace,

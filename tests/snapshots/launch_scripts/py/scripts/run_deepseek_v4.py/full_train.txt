@@ -190,7 +190,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --balance-data
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
-  --rollout-max-response-len 4096
+  --rollout-max-response-len 32768
   --apply-chat-template-kwargs '{"thinking_mode":"thinking"}' 
   --optimizer adam
   --lr 1e-6
@@ -227,13 +227,14 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --eval-top-p 0.7
   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
-  --eval-max-response-len 4096 
+  --eval-max-response-len 32768
   --rollout-num-gpus-per-engine 4
   --sglang-fp8-gemm-backend auto
   --sglang-moe-runner-backend auto
   --sglang-tp-size 4
   --sglang-dp-size 1
   --sglang-ep-size 4
+  --sglang-kv-cache-dtype fp8_e4m3
   --router-health-success-threshold 1
   --router-health-check-interval-secs 15
   --router-health-failure-threshold 40 

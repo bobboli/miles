@@ -124,5 +124,38 @@ def test_p3_enables_mxfp4_qat_for_mxfp8_train_and_fp4_rollout(tmp_path, monkeypa
 
     train_args = execute_train.call_args.kwargs["train_args"]
     assert "--dsv4-mxfp4-qat" in train_args
+    assert "--dsv4-kv-cache-qat" not in train_args
     assert "--fp8-recipe mxfp8" in train_args
     assert "--rollout-fp4-experts" in train_args
+    assert "--sglang-kv-cache-dtype fp8_e4m3" in train_args
+
+
+def test_p4_adds_kv_cache_qat_to_p3_recipe(tmp_path, monkeypatch):
+    args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    args.dsv4_mxfp4_qat = True
+    args.dsv4_kv_cache_qat = True
+    args.skip_saving = True
+    source = tmp_path / "DeepSeek-V4-Flash-0731"
+    source.mkdir()
+    (source / "config.json").write_text('{"expert_dtype":"fp4"}', encoding="utf-8")
+    execute_train = Mock()
+    monkeypatch.setattr(run_deepseek_v4.U, "execute_train", execute_train)
+
+    run_deepseek_v4._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    assert "--dsv4-mxfp4-qat" in train_args
+    assert "--dsv4-kv-cache-qat" in train_args
+    assert "--sglang-kv-cache-dtype fp8_e4m3" in train_args
+
+
+def test_kv_cache_qat_rejects_bfloat16_rollout_cache(tmp_path):
+    args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    args.dsv4_kv_cache_qat = True
+    args.rollout_kv_cache_dtype = "bfloat16"
+    source = tmp_path / "DeepSeek-V4-Flash-0731"
+    source.mkdir()
+    (source / "config.json").write_text('{"expert_dtype":"fp4"}', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="requires an FP8 E4M3 rollout cache"):
+        run_deepseek_v4._train(args)

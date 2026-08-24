@@ -83,7 +83,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.window_size = config.dsv4_window_size
         self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
         self.eps = config.layernorm_epsilon
-        self.use_fp8_qat = config.fp8 is not None
+        self.use_kv_cache_qat = config.dsv4_kv_cache_qat
 
         assert self.o_lora_rank == 1024
         assert self.head_dim == 512
@@ -251,7 +251,7 @@ class DeepSeekV4Attention(MegatronModule):
         kv_vanilla = self.kv_norm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
-        if self.use_fp8_qat:
+        if self.use_kv_cache_qat:
             kv_vanilla = kv_vanilla.clone()
             kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(kv_vanilla[..., : self.nope_head_dim], 64)
 
@@ -353,6 +353,7 @@ def get_dsv4_spec(args, config, vp_stage):
     config.dsv4_hc_sinkhorn_iters = args.dsv4_hc_sinkhorn_iters
     config.dsv4_hc_eps = args.dsv4_hc_eps
     config.dsv4_mxfp4_qat = getattr(args, "dsv4_mxfp4_qat", False)
+    config.dsv4_kv_cache_qat = getattr(args, "dsv4_kv_cache_qat", False)
     if config.dsv4_mxfp4_qat:
         from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import install_dsv4_mxfp4_qat
 
