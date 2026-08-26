@@ -2,6 +2,8 @@
 DeepSeek V4 training script.
 
 Supports:
+  - DeepSeek-V4-Flash             Official FP4+FP8 release from deepseek-ai
+                                  (291B, 43 layers).
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
@@ -45,6 +47,7 @@ from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
 app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
+    "DeepSeek-V4-Flash": "deepseek-ai",
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
@@ -55,6 +58,7 @@ _DEFAULT_MODEL_ORG = {
 }
 
 _MEGATRON_MODEL_TYPE = {
+    "DeepSeek-V4-Flash": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
@@ -84,6 +88,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = ""
     model_name: Literal[
+        "DeepSeek-V4-Flash",
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
@@ -374,7 +379,11 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif actor_num_nodes == 8 and args.model_name in ("DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731"):
+    elif actor_num_nodes == 8 and args.model_name in (
+        "DeepSeek-V4-Flash",
+        "DeepSeek-V4-Flash-FP8",
+        "DeepSeek-V4-Flash-0731",
+    ):
         extra_args += (
             "--tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 8 "
