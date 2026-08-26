@@ -79,7 +79,12 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
     # Iteration-based training.
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    # Eval-only and sub-global-batch runs still initialize the optimizer, whose
+    # scheduler requires positive learning-rate and weight-decay horizons.
+    args.train_iters = max(
+        1,
+        args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size,
+    )
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters * args.global_batch_size
