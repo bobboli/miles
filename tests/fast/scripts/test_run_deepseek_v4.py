@@ -110,6 +110,26 @@ def test_trainer_owned_rollout_paths_select_only_source_and_schema(tmp_path):
     assert run_deepseek_v4._rollout_checkpoint_path(p2) == str(source)
 
 
+def test_current_flash_supports_direct_hf_mxfp8_rollout(tmp_path):
+    args = run_deepseek_v4.ScriptArgs(
+        model_name="DeepSeek-V4-Flash",
+        init_model_source="hf",
+        rollout_weight_source="trainer",
+        model_dir=str(tmp_path),
+        model_local_dir=str(tmp_path),
+        hardware="B300",
+        train_fp8=False,
+        train_mxfp8=True,
+        rollout_fp8=False,
+        rollout_mxfp8=True,
+    )
+
+    assert args.model_org == "deepseek-ai"
+    assert args.megatron_model_type == "deepseek-v4-flash"
+    assert run_deepseek_v4._trainer_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash")
+    assert run_deepseek_v4._rollout_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+
+
 def test_p3_enables_mxfp4_qat_for_mxfp8_train_and_fp4_rollout(tmp_path, monkeypatch):
     args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
     args.dsv4_mxfp4_qat = True
