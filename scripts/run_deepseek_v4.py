@@ -4,6 +4,8 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash             Official FP4+FP8 release from deepseek-ai
                                   (291B, 43 layers).
+  - DeepSeek-V4-Flash-Base        Official FP8 base release from deepseek-ai
+                                  (291B, 43 layers).
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
@@ -48,6 +50,7 @@ app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
     "DeepSeek-V4-Flash": "deepseek-ai",
+    "DeepSeek-V4-Flash-Base": "deepseek-ai",
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
@@ -59,6 +62,7 @@ _DEFAULT_MODEL_ORG = {
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash": "deepseek-v4-flash",
+    "DeepSeek-V4-Flash-Base": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
@@ -89,6 +93,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash",
+        "DeepSeek-V4-Flash-Base",
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
@@ -381,6 +386,7 @@ def _prepare_spmd(args: ScriptArgs):
         )
     elif actor_num_nodes == 8 and args.model_name in (
         "DeepSeek-V4-Flash",
+        "DeepSeek-V4-Flash-Base",
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-0731",
     ):
