@@ -593,6 +593,7 @@ async def eval_rollout_single_dataset(
             multimodal_keys=args.multimodal_keys,
             metadata_key=dataset_cfg.metadata_key,
             tool_key=dataset_cfg.tool_key,
+            prompt_template=dataset_cfg.prompt_template,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         )

@@ -19,7 +19,6 @@ except ImportError:
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
 
-
 __all__ = ["Dataset"]
 
 logger = logging.getLogger(__name__)
@@ -130,8 +129,39 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
     return filtered_samples
 
 
-def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimodal_keys: dict = None):
-    prompt = data.get(prompt_key)
+def _apply_prompt_template(prompt, prompt_template: str | None):
+    if prompt_template is None:
+        return prompt
+    if prompt_template.count("{prompt}") != 1:
+        raise ValueError("prompt_template must contain exactly one `{prompt}` placeholder.")
+
+    if isinstance(prompt, str):
+        return prompt_template.replace("{prompt}", prompt)
+
+    if not isinstance(prompt, list):
+        raise TypeError(f"Prompt template requires a string or conversation list, got {type(prompt).__name__}.")
+
+    messages = [dict(message) for message in prompt]
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise TypeError("Prompt template requires the last user message content to be a string.")
+        message["content"] = prompt_template.replace("{prompt}", content)
+        return messages
+
+    raise ValueError("Prompt template requires a conversation with at least one user message.")
+
+
+def _build_messages(
+    data: dict,
+    prompt_key: str,
+    as_conversation: bool,
+    multimodal_keys: dict = None,
+    prompt_template: str | None = None,
+):
+    prompt = _apply_prompt_template(data.get(prompt_key), prompt_template)
 
     if isinstance(prompt, str):
         # If prompt is a string and we don't apply chat template, return the prompt as is.
@@ -196,6 +226,7 @@ class Dataset:
         label_key=None,
         tool_key=None,
         metadata_key="metadata",
+        prompt_template=None,
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
@@ -204,7 +235,13 @@ class Dataset:
         for data in read_file(path):
             # Both chat templates and multimodal inputs require conversation format (list of message dicts)
             as_conversation = apply_chat_template or (multimodal_keys is not None)
-            prompt = _build_messages(data, prompt_key, as_conversation, multimodal_keys)
+            prompt = _build_messages(
+                data,
+                prompt_key,
+                as_conversation,
+                multimodal_keys,
+                prompt_template,
+            )
 
             metadata = data.get(metadata_key) or {}
             tools = None

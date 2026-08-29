@@ -36,6 +36,11 @@ DATASET_RUNTIME_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 DATASET_SAMPLE_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
+    "prompt_template": {
+        "dataset_keys": ("prompt_template",),
+        "default_keys": ("prompt_template",),
+        "arg_attrs": (),
+    },
     "input_key": {
         "dataset_keys": ("input_key",),
         "default_keys": ("input_key",),
@@ -104,6 +109,7 @@ class EvalDatasetConfig:
     label_key: str | None = None
     tool_key: str | None = None
     metadata_key: str | None = None
+    prompt_template: str | None = None
 
     n_samples_per_eval_prompt: int | None = None
 
@@ -122,6 +128,8 @@ class EvalDatasetConfig:
 
     def __post_init__(self) -> None:
         self.metadata_overrides = _ensure_metadata_overrides(self.metadata_overrides)
+        if self.prompt_template is not None and self.prompt_template.count("{prompt}") != 1:
+            raise ValueError("prompt_template must contain exactly one `{prompt}` placeholder.")
 
     @property
     def cache_key(self) -> tuple[Any, ...]:
@@ -133,6 +141,7 @@ class EvalDatasetConfig:
             self.label_key,
             self.tool_key,
             self.metadata_key,
+            self.prompt_template,
         )
 
     def inject_metadata(self, sample_metadata: Any) -> dict[str, Any]:
