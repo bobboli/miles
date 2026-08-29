@@ -131,6 +131,35 @@ def test_current_flash_supports_direct_hf_mxfp8_rollout(tmp_path, model_name):
     assert run_deepseek_v4._rollout_checkpoint_path(args) == str(tmp_path / f"{model_name}-MXFP8-schema")
 
 
+def test_dapo_aime_uses_boxed_eval_config_and_32k_lengths(tmp_path, monkeypatch):
+    args = run_deepseek_v4.ScriptArgs(
+        model_name="DeepSeek-V4-Flash-Base",
+        init_model_source="hf",
+        rollout_weight_source="trainer",
+        data_dir=str(tmp_path / "datasets"),
+        model_dir=str(tmp_path),
+        model_local_dir=str(tmp_path),
+        hardware="B300",
+        train_fp8=False,
+        train_mxfp8=True,
+        rollout_fp8=False,
+        rollout_mxfp8=True,
+        skip_saving=True,
+    )
+    execute_train = Mock()
+    monkeypatch.setattr(run_deepseek_v4.U, "execute_train", execute_train)
+
+    run_deepseek_v4._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    extra_env_vars = execute_train.call_args.kwargs["extra_env_vars"]
+    assert f"--eval-config {run_deepseek_v4._AIME_2024_EVAL_CONFIG}" in train_args
+    assert "--eval-prompt-data" not in train_args
+    assert "--rollout-max-response-len 32768" in train_args
+    assert "--eval-max-response-len 32768" in train_args
+    assert extra_env_vars["MILES_AIME_2024_EVAL_DATA"] == str(tmp_path / "datasets" / "aime-2024" / "aime-2024.jsonl")
+
+
 def test_p3_enables_mxfp4_qat_for_mxfp8_train_and_fp4_rollout(tmp_path, monkeypatch):
     args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
     args.dsv4_mxfp4_qat = True

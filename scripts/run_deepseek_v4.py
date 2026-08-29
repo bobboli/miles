@@ -71,6 +71,7 @@ _MEGATRON_MODEL_TYPE = {
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
+_AIME_2024_EVAL_CONFIG = Path(__file__).resolve().parent / "eval_configs" / "aime-2024-boxed.yaml"
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -609,7 +610,7 @@ def _train(args: ScriptArgs):
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
-                f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+                f"--eval-config {_AIME_2024_EVAL_CONFIG} "
                 "--n-samples-per-eval-prompt 8 "
                 "--eval-max-response-len 32768 "
             )
@@ -719,6 +720,8 @@ def _train(args: ScriptArgs):
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
     }
+    if args.task == "dapo_aime":
+        extra_env_vars["MILES_AIME_2024_EVAL_DATA"] = f"{args.data_dir}/aime-2024/aime-2024.jsonl"
     if args.rollout_weight_source == "trainer":
         extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] = "1"
     if nccl_launch_order_implicit := os.environ.get("NCCL_LAUNCH_ORDER_IMPLICIT"):
