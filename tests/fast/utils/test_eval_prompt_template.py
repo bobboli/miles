@@ -2,10 +2,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.utils.data import Dataset, _apply_prompt_template
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs
-from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 
