@@ -67,6 +67,7 @@ _MEGATRON_MODEL_TYPE = {
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
+_MXFP4_QAT_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-0731")
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -541,11 +542,11 @@ def _train(args: ScriptArgs):
     rollout_expert_dtype = _resolve_rollout_expert_dtype(args, rollout_checkpoint)
     rollout_fp4_experts = rollout_expert_dtype == "fp4"
     if args.dsv4_mxfp4_qat:
-        assert args.model_name == "DeepSeek-V4-Flash-0731", "MXFP4 QAT is currently scoped to DSV4 Flash 0731."
+        assert args.model_name in _MXFP4_QAT_MODEL_NAMES, "MXFP4 QAT requires an official packed-MXFP4 DSV4 Flash model."
         assert args.train_mxfp8, "MXFP4 QAT requires the P3 MXFP8 training recipe."
         assert rollout_fp4_experts, "MXFP4 QAT requires packed MXFP4 routed experts in rollout."
     if args.dsv4_kv_cache_qat:
-        assert args.model_name == "DeepSeek-V4-Flash-0731", "KV-cache QAT is currently scoped to DSV4 Flash 0731."
+        assert args.model_name in _MXFP4_QAT_MODEL_NAMES, "KV-cache QAT requires an official DSV4 Flash model."
         assert args.rollout_kv_cache_dtype == "fp8_e4m3", "KV-cache QAT requires an FP8 E4M3 rollout cache."
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
