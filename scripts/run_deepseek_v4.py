@@ -44,6 +44,7 @@ Usage patterns:
 """
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -753,6 +754,8 @@ def _train(args: ScriptArgs):
         # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
         "SGLANG_DISABLE_MULTIMEM_AG": "1",
     }
+    if validate_routing_replay := os.environ.get("MILES_VALIDATE_ROUTING_REPLAY"):
+        extra_env_vars["MILES_VALIDATE_ROUTING_REPLAY"] = validate_routing_replay
     if args.rollout_weight_source == "trainer":
         extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] = "1"
     if args.model_name == "DeepSeek-V4-Pro-FP8":
