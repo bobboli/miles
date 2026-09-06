@@ -19,7 +19,18 @@ def register_replay_list_moe(replay_list, replay_data, *, models, **_kwargs):
                     continue
             layer_indices.append(layer_id)
 
-    for replay_idx, layer_idx in enumerate(layer_indices):
+    if len(replay_list) != len(layer_indices):
+        raise AssertionError(
+            f"registered {len(replay_list)} routing replays for {len(layer_indices)} local MoE layers"
+        )
+
+    for replay_idx, fallback_layer_idx in enumerate(layer_indices):
         replay = replay_list[replay_idx]
+        layer_idx = replay.stream_idx if replay.stream_idx is not None else fallback_layer_idx
+        if not 0 <= layer_idx < replay_data.shape[1]:
+            raise AssertionError(
+                f"routing replay stream_idx {layer_idx} out of range "
+                f"(replay_data has {replay_data.shape[1]} streams)"
+            )
         replay.stream_idx = layer_idx
         replay.record(replay_data[:, layer_idx])
