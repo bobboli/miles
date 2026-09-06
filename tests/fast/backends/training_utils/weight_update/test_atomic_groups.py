@@ -31,6 +31,20 @@ class TestHfAtomicUpdateGroups:
             ),
         }
 
+    def test_deepseekv4_checkpoint_layout_registers_bridge_export_names(self):
+        groups = {
+            group.key: group.suffixes
+            for group in get_hf_atomic_update_groups("deepseekv4", dsv4_checkpoint_layout=True)
+        }
+        assert groups == {
+            "wqkv_a": (".attn.wq_a.weight", ".attn.wkv.weight"),
+            "compressor_wkv_gate": (".attn.compressor.wkv.weight", ".attn.compressor.wgate.weight"),
+            "indexer_compressor_wkv_gate": (
+                ".attn.indexer.compressor.wkv.weight",
+                ".attn.indexer.compressor.wgate.weight",
+            ),
+        }
+
     def test_deepseekv4_suffixes_do_not_shadow_each_other(self):
         """endswith matching must resolve uniquely across the three v4 pairs."""
         suffixes = [s for g in get_hf_atomic_update_groups("deepseekv4") for s in g.suffixes]
