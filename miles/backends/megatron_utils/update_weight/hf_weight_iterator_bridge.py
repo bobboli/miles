@@ -8,9 +8,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
-from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import (
-    get_hf_atomic_update_groups,
-)
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 

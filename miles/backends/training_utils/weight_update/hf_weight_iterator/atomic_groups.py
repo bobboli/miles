@@ -53,11 +53,7 @@ def get_hf_atomic_update_groups(
     inside the converter, and its engine-side loads are split-safe."""
     normalized_model_name = model_name.lower().replace("-", "").replace("_", "")
     if "deepseekv4" in normalized_model_name:
-        groups = (
-            _DEEPSEEK_V4_CHECKPOINT_GROUPS
-            if dsv4_checkpoint_layout
-            else _DEEPSEEK_V4_NATIVE_GROUPS
-        )
+        groups = _DEEPSEEK_V4_CHECKPOINT_GROUPS if dsv4_checkpoint_layout else _DEEPSEEK_V4_NATIVE_GROUPS
         return list(groups)
     if "inkling" in normalized_model_name:
         return []
