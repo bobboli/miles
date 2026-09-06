@@ -14,6 +14,7 @@ def _get_rank():
 class Replay:
     def __init__(self, stream_idx: int | None = None):
         self.stream_idx = stream_idx
+        self.debug_source = None
         self.forward_index = 0
         self.backward_index = 0
         self.top_indices_list: list[torch.Tensor] = []
@@ -152,6 +153,14 @@ class BaseReplayManager:
         if not self.enabled:
             return
         replay = self.create_replay(stream_idx=stream_idx)
+        if os.environ.get("MILES_VALIDATE_ROUTING_REPLAY") == "1":
+            config = getattr(module, "config", None)
+            replay.debug_source = {
+                "module": type(module).__name__,
+                "layer_number": getattr(module, "layer_number", None),
+                "is_hash_layer": getattr(module, "is_hash_layer", None),
+                "moe_n_hash_layers": getattr(config, "moe_n_hash_layers", None),
+            }
         setattr(module, attr_name, replay)
         manager = self
 
@@ -247,6 +256,7 @@ class RoutingReplayManager(BaseReplayManager):
             "Invalid routing replay indices before MoE dispatch: "
             f"stream={replay.stream_idx}, rows={flat.shape[0]}, "
             f"invalid={int(invalid.sum())}, duplicate={int(duplicate.sum())}, "
+            f"source={getattr(replay, 'debug_source', None)}, "
             f"examples={examples}"
         )
 
