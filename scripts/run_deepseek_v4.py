@@ -747,6 +747,8 @@ def _train(args: ScriptArgs):
         # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
         "SGLANG_DISABLE_MULTIMEM_AG": "1",
     }
+    if args.rollout_weight_source == "trainer":
+        extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] = "1"
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
         extra_env_vars["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
