@@ -8,6 +8,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.utils import megatron_bridge_utils
 from miles.utils.lora import is_lora_weight_name
 
@@ -39,6 +40,13 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     **self.quantization_config,
                     "_miles_quantized_basenames": quantized_basenames,
                 }
+
+    def _hf_atomic_update_groups(self):
+        return get_hf_atomic_update_groups(
+            self.model_name,
+            q_lora_rank=self.args.q_lora_rank,
+            dsv4_checkpoint_layout=True,
+        )
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
