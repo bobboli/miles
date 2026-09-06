@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -113,3 +114,25 @@ def test_trainer_owned_rollout_paths_select_source_and_p1_schema(tmp_path):
     assert module._rollout_checkpoint_path(p1) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
     assert module._trainer_checkpoint_path(p2) == str(source)
     assert module._rollout_checkpoint_path(p2) == str(source)
+
+
+def test_p3_uses_native_hybrid_trainer_and_packed_mxfp4_rollout(tmp_path, monkeypatch):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    args.dsv4_mxfp4_qat = True
+    args.skip_saving = True
+    source = tmp_path / "DeepSeek-V4-Flash"
+    source.mkdir()
+    (source / "config.json").write_text(json.dumps({"expert_dtype": "fp4"}), encoding="utf-8")
+    execute_train = Mock()
+    monkeypatch.setattr(module.U, "execute_train", execute_train)
+
+    module._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    assert "--megatron-to-hf-mode bridge" in train_args
+    assert "--dsv4-impl megatron" in train_args
+    assert "--qkv-format thd" in train_args
+    assert "--dsv4-mxfp4-qat" in train_args
+    assert "--fp8-recipe mxfp8" in train_args
+    assert "--rollout-fp4-experts" in train_args
+    assert execute_train.call_args.kwargs["extra_env_vars"]["SGLANG_DSV4_FP4_EXPERTS"] == "1"

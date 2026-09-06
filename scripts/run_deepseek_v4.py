@@ -76,6 +76,7 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-0731")
 _FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
+_MXFP4_QAT_MODEL_NAMES = _MXFP4_MODEL_NAMES
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -151,6 +152,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_mxfp8: bool = False
     rollout_mxfp8: bool = False
     rollout_expert_dtype: Literal["auto", "fp4", "fp8"] = "auto"
+    dsv4_mxfp4_qat: bool = False
     # Empty keeps the backend implied by the rollout precision.
     sglang_moe_runner_backend: str = ""
     sglang_fp8_gemm_backend: str = ""
@@ -575,6 +577,10 @@ def _train(args: ScriptArgs):
     trainer_checkpoint = _trainer_checkpoint_path(args)
     rollout_expert_dtype = _resolve_rollout_expert_dtype(args, rollout_checkpoint)
     rollout_fp4_experts = rollout_expert_dtype == "fp4"
+    if args.dsv4_mxfp4_qat:
+        assert args.model_name in _MXFP4_QAT_MODEL_NAMES, "MXFP4 QAT requires a packed-MXFP4 DSV4 checkpoint."
+        assert args.train_mxfp8, "MXFP4 QAT requires the P3 MXFP8 training recipe."
+        assert rollout_fp4_experts, "MXFP4 QAT requires packed MXFP4 routed experts in rollout."
 
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
@@ -582,7 +588,7 @@ def _train(args: ScriptArgs):
     print(
         f"[precision] train_fp8={args.train_fp8}, rollout_fp8={args.rollout_fp8}, "
         f"train_mxfp8={args.train_mxfp8}, rollout_mxfp8={args.rollout_mxfp8}, "
-        f"rollout_expert_dtype={rollout_expert_dtype}"
+        f"rollout_expert_dtype={rollout_expert_dtype}, dsv4_mxfp4_qat={args.dsv4_mxfp4_qat}"
     )
     print(
         f"running on {args.num_nodes} nodes "
@@ -778,6 +784,8 @@ def _train(args: ScriptArgs):
     )
     if rollout_fp4_experts:
         misc_args += "--rollout-fp4-experts "
+    if args.dsv4_mxfp4_qat:
+        misc_args += "--dsv4-mxfp4-qat "
     if args.colocate:
         misc_args += "--colocate "
     else:
