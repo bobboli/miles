@@ -2,14 +2,16 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
+import pytest
 import torch
 
 from miles.utils.replay_base import BaseReplayManager
 
 
 class _FakeReplay:
-    def __init__(self, *top_indices):
+    def __init__(self, *top_indices, stream_idx=None):
         self.top_indices = list(top_indices)
+        self.stream_idx = stream_idx
 
     def pop_forward(self):
         return self.top_indices.pop(0)
@@ -51,3 +53,23 @@ def test_get_topk_fn_preserves_partial_padding():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
+
+
+def test_routing_replay_validation_reports_duplicate_rows(monkeypatch):
+    from miles.utils.replay_base import RoutingReplayManager
+
+    monkeypatch.setenv("MILES_VALIDATE_ROUTING_REPLAY", "1")
+    manager = RoutingReplayManager()
+    manager.enabled = True
+    manager.stage = "replay_forward"
+    manager.set_current(
+        _FakeReplay(
+            torch.tensor([[2, 2, 4]], dtype=torch.int32),
+            stream_idx=17,
+        )
+    )
+
+    topk_fn = manager.get_topk_fn(_topk, return_probs=False)
+
+    with pytest.raises(RuntimeError, match=r"stream=17.*duplicate=1"):
+        topk_fn(torch.arange(5, dtype=torch.float32).unsqueeze(0), 3)

@@ -20,5 +20,6 @@ def register_replay_list_moe(replay_list, replay_data, *, models, **_kwargs):
             layer_indices.append(layer_id)
 
     for replay_idx, layer_idx in enumerate(layer_indices):
-        layer_data = replay_data[:, layer_idx]
-        replay_list[replay_idx].record(layer_data)
+        replay = replay_list[replay_idx]
+        replay.stream_idx = layer_idx
+        replay.record(replay_data[:, layer_idx])

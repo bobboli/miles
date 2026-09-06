@@ -87,7 +87,7 @@ class BaseReplayManager:
     def get_topk_fn(self, old_topk_fn, return_probs):
         manager = self
 
-        def _get_replay_result(top_indices, scores, topk, *args, **kwargs):
+        def _get_replay_result(replay, top_indices, scores, topk, *args, **kwargs):
             assert (
                 top_indices.shape[0] == scores.shape[0]
             ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"
@@ -107,6 +107,8 @@ class BaseReplayManager:
                     % scores.shape[1]
                 )
                 top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+
+            manager.validate_replay_indices(replay, top_indices, scores.shape[1])
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -133,15 +135,18 @@ class BaseReplayManager:
                 return result
 
             elif stage == "replay_forward":
-                return _get_replay_result(replay.pop_forward(), scores, topk, *args, **kwargs)
+                return _get_replay_result(replay, replay.pop_forward(), scores, topk, *args, **kwargs)
 
             elif stage == "replay_backward":
-                return _get_replay_result(replay.pop_backward(), scores, topk, *args, **kwargs)
+                return _get_replay_result(replay, replay.pop_backward(), scores, topk, *args, **kwargs)
 
             else:
                 return old_topk_fn(scores, topk, *args, **kwargs)
 
         return new_topk_fn
+
+    def validate_replay_indices(self, replay: Replay, top_indices: torch.Tensor, num_choices: int) -> None:
+        """Optionally validate manager-specific replay invariants before use."""
 
     def register_to_module(self, module, attr_name: str, stream_idx: int | None = None):
         if not self.enabled:
@@ -223,6 +228,27 @@ class RoutingReplayManager(BaseReplayManager):
     if_sp_region = True
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
+
+    def validate_replay_indices(self, replay: Replay, top_indices: torch.Tensor, num_choices: int) -> None:
+        if os.environ.get("MILES_VALIDATE_ROUTING_REPLAY") != "1":
+            return
+
+        flat = top_indices.reshape(-1, top_indices.shape[-1])
+        invalid = ((flat < 0) | (flat >= num_choices)).any(dim=-1)
+        ordered = flat.sort(dim=-1).values
+        duplicate = (ordered[:, 1:] == ordered[:, :-1]).any(dim=-1)
+        bad = invalid | duplicate
+        if not bad.any():
+            return
+
+        bad_rows = bad.nonzero(as_tuple=False).squeeze(-1)[:10]
+        examples = [(int(row), flat[row].tolist()) for row in bad_rows]
+        raise RuntimeError(
+            "Invalid routing replay indices before MoE dispatch: "
+            f"stream={replay.stream_idx}, rows={flat.shape[0]}, "
+            f"invalid={int(invalid.sum())}, duplicate={int(duplicate.sum())}, "
+            f"examples={examples}"
+        )
 
 
 class IndexerReplayManager(BaseReplayManager):
