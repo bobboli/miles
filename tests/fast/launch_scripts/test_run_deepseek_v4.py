@@ -90,6 +90,20 @@ def test_direct_hf_full_train_skips_offline_weight_conversion(tmp_path, monkeypa
     train.assert_called_once_with(args)
 
 
+def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkeypatch):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    source = tmp_path / "DeepSeek-V4-Flash"
+    source.mkdir()
+    (source / "config.json").write_text('{"expert_dtype": "fp4"}', encoding="utf-8")
+    execute_train = Mock()
+    monkeypatch.setattr(module.U, "execute_train", execute_train)
+
+    module._train(args)
+
+    extra_env_vars = execute_train.call_args.kwargs["extra_env_vars"]
+    assert extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] == "1"
+
+
 def test_trainer_owned_rollout_paths_select_source_and_p1_schema(tmp_path):
     module, p1 = _direct_hf_args(tmp_path, rollout_mxfp8=True)
     _, p2 = _direct_hf_args(tmp_path, rollout_mxfp8=False)
