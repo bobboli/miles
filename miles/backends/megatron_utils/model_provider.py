@@ -89,6 +89,12 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # the target model. Follow the launched runtime rather than the source file.
     provider.mtp_num_layers = args.mtp_num_layers
 
+    provider.dsv4_mxfp4_qat = getattr(args, "dsv4_mxfp4_qat", False)
+    if provider.dsv4_mxfp4_qat:
+        from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import install_dsv4_mxfp4_qat
+
+        install_dsv4_mxfp4_qat()
+
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
 
