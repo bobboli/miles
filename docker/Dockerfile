@@ -56,8 +56,8 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 
 # ====================================== Collect pre-built wheels ============================================
 # Optional: drop pre-built wheels into <miles>/wheels/ to skip the release download below.
-# `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
-COPY wheel[s]/ /tmp/wheels/
+# The tracked directory keeps this optional input portable across image builders.
+COPY wheels/ /tmp/wheels/
 
 RUN case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
