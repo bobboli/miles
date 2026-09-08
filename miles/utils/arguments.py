@@ -2210,6 +2210,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
             parser.add_argument(
+                "--memory-snapshot-ranks",
+                type=int,
+                nargs="+",
+                default=None,
+                help=(
+                    "Global distributed ranks that record memory history. By default every rank "
+                    "records; restricting this avoids the overhead of full-cluster CUDA snapshots."
+                ),
+            )
+            parser.add_argument(
                 "--profile-target",
                 type=str,
                 choices=["train_overall", "train_actor", "train_log_probs"],

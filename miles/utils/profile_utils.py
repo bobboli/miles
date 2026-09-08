@@ -10,6 +10,11 @@ from miles.utils.memory_utils import print_memory
 logger = logging.getLogger(__name__)
 
 
+def _should_record_memory_history(args) -> bool:
+    ranks = getattr(args, "memory_snapshot_ranks", None)
+    return ranks is None or torch.distributed.get_rank() in ranks
+
+
 class TrainProfiler:
     def __init__(self, args):
         self.args = args
@@ -19,7 +24,11 @@ class TrainProfiler:
         if args.use_pytorch_profiler and ("train_overall" in args.profile_target):
             self._torch_profiler_overall = _create_torch_profiler(args, name="train_overall")
 
-        if args.record_memory_history and ("train_overall" in args.profile_target):
+        if (
+            args.record_memory_history
+            and ("train_overall" in args.profile_target)
+            and _should_record_memory_history(args)
+        ):
             self._memory_profiler_overall = _BaseMemoryProfiler.create(args)
             self._memory_profiler_overall.start()
 
