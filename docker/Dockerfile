@@ -42,9 +42,9 @@ WORKDIR /root/
 
 # ======================================== Apt dependencies =============================================
 
-RUN apt update
+RUN apt -o APT::Sandbox::User=root update
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool tmux
+RUN apt -o APT::Sandbox::User=root install -y nvtop rsync dnsutils ethtool tmux
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
