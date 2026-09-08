@@ -98,7 +98,8 @@ RUN git clone https://github.com/deepseek-ai/FlashMLA.git /tmp/FlashMLA && \
     cd /tmp/FlashMLA && \
     git checkout "${FLASH_MLA_COMMIT}" && \
     git submodule update --init --recursive && \
-    MAX_JOBS=8 NVCC_THREADS=4 pip install -v --no-build-isolation . && \
+    CPLUS_INCLUDE_PATH=/usr/local/cuda/include/cccl \
+      MAX_JOBS=8 NVCC_THREADS=4 pip install -v --no-build-isolation . && \
     rm -rf /tmp/FlashMLA
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
