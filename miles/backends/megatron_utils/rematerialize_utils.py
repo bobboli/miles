@@ -49,7 +49,11 @@ def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callab
 
         def cast_mcore():
             for dist_opt in dist_opts:
-                dist_opt._copy_main_params_to_model_params()
+                store = getattr(dist_opt, "_nvme_state_store", None)
+                if store is None:
+                    dist_opt._copy_main_params_to_model_params()
+                else:
+                    store.restore_model_params_from_main()
 
         return cast_mcore
 

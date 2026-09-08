@@ -12,9 +12,10 @@ a store and routes the five entry points that touch optimizer state at it, so
 Megatron carries no NVMe-specific behaviour. The one piece that stays on Megatron's
 side is the pair of checkpoint hooks in ``megatron/training/checkpointing.py``, which
 have to be inside ``save_checkpoint`` / ``load_checkpoint`` to cover every call path;
-they reach this class through four methods:
+they reach this class through five methods:
 
     step()
+    restore_model_params_from_main()
     refresh_main_from_model_params(copy_fn)
     save_to(base_dir)
     load_from(base_dir) -> bool
@@ -239,6 +240,9 @@ class _Bucket:
     def fetch(self) -> int:
         return self._move(SEGMENTS if self.moments_ready else SEGMENTS[:1], to_disk=False)
 
+    def fetch_main(self) -> int:
+        return self._move(SEGMENTS[:1], to_disk=False)
+
     def flush(self, segments=SEGMENTS) -> int:
         moved = self._move(segments, to_disk=True)
         self.moments_ready = self.moments_ready or tuple(segments) == SEGMENTS
@@ -413,6 +417,21 @@ class NVMeOptimizerStateStore:
             f"wrote {written / 1024**3:.1f} GB in {time.monotonic() - started:.1f}s"
         )
         return True
+
+    @torch.no_grad()
+    def restore_model_params_from_main(self) -> None:
+        """Rebuild model-param shards without materializing the full optimizer state."""
+        started = time.monotonic()
+        read = written = 0
+        for bucket in self.buckets:
+            read += bucket.fetch_main()
+            self._copy_main_to_model_params(bucket.entries)
+            written += bucket.flush(segments=SEGMENTS[:1])
+        logger.info(
+            f"NVMe streaming model-param restore: {len(self.buckets)} buckets, "
+            f"read {read / 1024**3:.1f} GB, released {written / 1024**3:.1f} GB "
+            f"in {time.monotonic() - started:.1f}s"
+        )
 
     @torch.no_grad()
     def initialize_main_from_model_params(self) -> int:

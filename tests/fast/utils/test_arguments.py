@@ -459,6 +459,51 @@ def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
         miles_validate_args(args)
 
 
+def _make_cpu_offload_streaming_args(*, rematerialize: bool) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    extra = [
+        "--stream-optimizer-state-to-disk",
+        "--colocate",
+        "--offload-train",
+        "--offload-train-target",
+        "cpu",
+        "--num-rollout",
+        "1",
+    ]
+    if rematerialize:
+        extra.append("--rematerialize-param-from-master-weight")
+    args = parser.parse_args(extra + REQUIRED_ARGS)
+    vars(args).update(
+        optimizer="adam",
+        use_distributed_optimizer=True,
+        optimizer_cpu_offload=False,
+        offload_optimizer_states=False,
+        use_precision_aware_optimizer=False,
+        overlap_param_gather=False,
+        compute_advantages_and_returns=True,
+        num_critic_only_steps=0,
+    )
+    _set_megatron_parallel_sizes(args)
+    return args
+
+
+def test_stream_optimizer_state_to_disk_accepts_cpu_offload_with_rematerialization():
+    args = _make_cpu_offload_streaming_args(rematerialize=True)
+
+    miles_validate_args(args)
+
+    assert args.offload_train_target == "cpu"
+    assert args.rematerialize_param_from_master_weight is True
+
+
+def test_stream_optimizer_state_to_disk_rejects_cpu_offload_without_rematerialization():
+    args = _make_cpu_offload_streaming_args(rematerialize=False)
+
+    with pytest.raises(AssertionError, match="requires --rematerialize-param-from-master-weight"):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()

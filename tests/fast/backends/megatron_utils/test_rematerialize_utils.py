@@ -17,11 +17,34 @@ class _FakeDistOpt:
         self.copied += 1
 
 
+class _FakeNVMeStore:
+    def __init__(self):
+        self.restored = 0
+
+    def restore_model_params_from_main(self):
+        self.restored += 1
+
+
 def test_mcore_cast_calls_every_chained_optimizer():
     dist_opts = [_FakeDistOpt(), _FakeDistOpt()]
     cast = _build_cast_main_to_params_fn(SimpleNamespace(chained_optimizers=dist_opts), precision_aware=False)
     cast()
     assert [opt.copied for opt in dist_opts] == [1, 1]
+
+
+def test_mcore_cast_streams_evicted_main_params_from_nvme():
+    resident = _FakeDistOpt()
+    streamed = _FakeDistOpt()
+    streamed._nvme_state_store = _FakeNVMeStore()
+    cast = _build_cast_main_to_params_fn(
+        SimpleNamespace(chained_optimizers=[resident, streamed]), precision_aware=False
+    )
+
+    cast()
+
+    assert resident.copied == 1
+    assert streamed.copied == 0
+    assert streamed._nvme_state_store.restored == 1
 
 
 def test_hdo_replay_covers_both_fractions():

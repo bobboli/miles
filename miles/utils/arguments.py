@@ -230,7 +230,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "GPU *while the step runs*; --offload-train-target=disk cannot help there.\n"
                     "adam: streams fp32 main params and moments through per-bucket files, one bucket "
                     "resident at a time. Requires the distributed optimizer, excludes "
-                    "--offload-optimizer-states and --optimizer-cpu-offload.\n"
+                    "--offload-optimizer-states and --optimizer-cpu-offload. Colocated CPU trainer "
+                    "offload also requires --rematerialize-param-from-master-weight; the rebuild "
+                    "then streams only the fp32 main params back one bucket at a time.\n"
                     "dist_muon: the disk backend for --chunked-optimizer-state-offload, so pass that "
                     "plus a non-zero --optimizer-state-offload-fraction. --optimizer-cpu-offload is "
                     "Adam-only. This bounds host residency, not the GPU restore window -- for that "
@@ -3458,12 +3460,12 @@ def miles_validate_args(args):
         )
 
     if args.stream_optimizer_state_to_disk:
-        assert args.offload_train_target == "disk" or not args.offload_train, (
-            "--stream-optimizer-state-to-disk with --offload-train requires "
-            "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "
-            "the duration of the step will not hold a pinned host copy of the whole actor either. "
-            "Disaggregated runs do not offload the trainer at all, and the target is unused there."
-        )
+        if args.offload_train and args.offload_train_target == "cpu":
+            assert args.rematerialize_param_from_master_weight, (
+                "--stream-optimizer-state-to-disk with CPU trainer offload requires "
+                "--rematerialize-param-from-master-weight: DDP parameter buffers have no CPU "
+                "backup and the streamed fp32 main params must rebuild them before training"
+            )
         assert not args.indep_dp, (
             "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
             "process group, so torch.distributed.get_rank() restarts at 0 per cell and two cells "

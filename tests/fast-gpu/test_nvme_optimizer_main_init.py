@@ -42,3 +42,41 @@ def test_bucketwise_main_initialization_preserves_bytes_and_releases_cuda_storag
     restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
     torch.testing.assert_close(restored, model_param.float().cpu(), atol=0, rtol=0)
     os.close(bucket.fd)
+
+
+def test_bucketwise_rematerialization_restores_param_buffer_and_releases_main(tmp_path):
+    param_data = torch.arange(600_000, dtype=torch.float32, device="cuda").to(torch.bfloat16)
+    expected = param_data.clone()
+    model_param = torch.nn.Parameter(param_data)
+    main_param = torch.empty_like(model_param, dtype=torch.float32)
+    _resize(main_param, 0)
+    bucket = _Bucket(
+        str(tmp_path / "bucket.bin"),
+        entries=[_Entry(model_param, main_param, 0)],
+        adam=None,
+        stager=_Stager(1024 * 1024),
+        dtypes={segment: torch.float32 for segment in ("main", "exp_avg", "exp_avg_sq")},
+    )
+    param_range = SimpleNamespace(start=0, end=model_param.numel(), size=model_param.numel())
+    buffer = SimpleNamespace(buckets=[SimpleNamespace(param_data=param_data)])
+    dist_opt = SimpleNamespace(
+        model_fp32_groups=[],
+        shard_fp32_groups=[],
+        model_param_gbuf_map={model_param: (0, 0, 0)},
+        buffers=[buffer],
+        _get_model_param_range_map=lambda _param: {
+            "param": param_range,
+            "gbuf_world_in_bucket": param_range,
+        },
+    )
+    store = object.__new__(NVMeOptimizerStateStore)
+    store.dist_opt = dist_opt
+    store.buckets = [bucket]
+
+    store.initialize_main_from_model_params()
+    param_data.zero_()
+    store.restore_model_params_from_main()
+
+    assert main_param.untyped_storage().nbytes() == 0
+    torch.testing.assert_close(param_data, expected, atol=0, rtol=0)
+    os.close(bucket.fd)
