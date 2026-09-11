@@ -3,6 +3,7 @@ import argparse
 import inspect
 import logging
 from contextlib import nullcontext
+from functools import partial
 from typing import Literal
 
 import torch
@@ -20,6 +21,7 @@ from megatron.training.arguments import core_transformer_config_from_args
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
+from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # attention kernel selection
     provider.attention_backend = args.attention_backend
+    if is_dsv4_model(args) and args.dsv4_impl == "miles":
+        # Bridge supplies the model geometry; the plugin supplies the TP/CP attention spec.
+        layer_spec = import_module(args.spec)
+        provider.transformer_layer_spec = partial(layer_spec, args) if callable(layer_spec) else layer_spec
+        provider.experimental_attention_variant = args.experimental_attention_variant
     if hasattr(provider, "dsa_kernel_backend"):
         dsa_kernel_backend = getattr(args, "dsa_kernel_backend", None)
         if dsa_kernel_backend is None:

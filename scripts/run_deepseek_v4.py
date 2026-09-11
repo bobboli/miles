@@ -570,9 +570,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
-    if args.init_model_source == "hf" and args.dsv4_impl != "megatron":
-        raise ValueError("Direct-HF DeepSeek-V4 training requires --dsv4-impl megatron.")
-
     rollout_checkpoint = _rollout_checkpoint_path(args)
     trainer_checkpoint = _trainer_checkpoint_path(args)
     rollout_expert_dtype = _resolve_rollout_expert_dtype(args, rollout_checkpoint)

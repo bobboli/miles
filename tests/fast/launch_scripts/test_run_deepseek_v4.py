@@ -136,3 +136,37 @@ def test_p3_uses_native_hybrid_trainer_and_packed_mxfp4_rollout(tmp_path, monkey
     assert "--fp8-recipe mxfp8" in train_args
     assert "--rollout-fp4-experts" in train_args
     assert execute_train.call_args.kwargs["extra_env_vars"]["SGLANG_DSV4_FP4_EXPERTS"] == "1"
+
+
+@pytest.mark.parametrize(("rollout_mxfp8", "qat"), [(True, False), (False, False), (False, True)])
+def test_legacy_attention_supports_direct_hf_p1_p2_p3(tmp_path, monkeypatch, rollout_mxfp8, qat):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=rollout_mxfp8)
+    args.dsv4_impl = "miles"
+    args.num_nodes = 8
+    args.num_gpus_per_node = 4
+    args.dsv4_mxfp4_qat = qat
+    args.skip_saving = True
+    checkpoint = tmp_path / ("DeepSeek-V4-Flash-MXFP8-schema" if rollout_mxfp8 else "DeepSeek-V4-Flash")
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps({"expert_dtype": "fp8" if rollout_mxfp8 else "fp4"}), encoding="utf-8"
+    )
+    execute_train = Mock()
+    monkeypatch.setattr(module.U, "execute_train", execute_train)
+
+    module._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    for option in (
+        "--megatron-to-hf-mode bridge",
+        "--dsv4-impl miles",
+        "--qkv-format bshd",
+        "--tensor-model-parallel-size 2",
+        "--context-parallel-size 2",
+        "--max-tokens-per-gpu 2048",
+        "--fp8-recipe mxfp8",
+    ):
+        assert option in train_args
+    assert ("--dsv4-mxfp4-qat" in train_args) is qat
+    assert ("--rollout-fp4-experts" in train_args) is not rollout_mxfp8
+    assert execute_train.call_args.kwargs["extra_env_vars"]["MILES_SGLANG_DUMMY_LOAD"] == "1"

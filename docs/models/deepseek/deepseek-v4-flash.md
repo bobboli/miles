@@ -59,6 +59,32 @@ python scripts/run_deepseek_v4.py full-train \
 
 The `full-train` subcommand chains `prepare-download → [prepare-fp8 →] prepare-single → prepare-spmd → prepare-cp → train` (`prepare-fp8` only for the MXFP4 `0731` variant). Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
+#### Direct-HF initialization with Miles attention
+
+`--init-model-source hf --rollout-weight-source trainer` skips offline BF16 and
+`torch_dist` weight conversion. Megatron-Bridge loads the official checkpoint into
+the trainer; SGLang initializes only its layout and receives quantized weights from
+the trainer's initial online sync. This supports both `--dsv4-impl megatron` and
+`--dsv4-impl miles`.
+
+For P1 on 8 GB300 nodes (4 GPUs each), using the Miles TP2/PP8/CP2/EP4 recipe:
+
+```bash
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash --hardware GB300 \
+   --num-nodes 8 --num-gpus-per-node 4 \
+   --init-model-source hf --rollout-weight-source trainer --dsv4-impl miles \
+   --train-mxfp8 --no-train-fp8 --rollout-mxfp8 --no-rollout-fp8
+```
+
+P1 creates an MXFP8 metadata-only rollout schema, not a converted weight checkpoint.
+For P2, replace `--rollout-mxfp8 --no-rollout-fp8` with
+`--no-rollout-mxfp8 --rollout-fp8`: routed experts then use packed MXFP4 weights.
+P3 additionally sets `--dsv4-mxfp4-qat`; training computation stays MXFP8 in all
+three phases. The Miles attention implementation also enables its existing KV
+fake quantization when training FP8 is enabled, including this MXFP8 recipe;
+that behavior is common to these three phases.
+
 ### 3.2 Launcher path defaults
 
 The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from CLI flags. The defaults are:

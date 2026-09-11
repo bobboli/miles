@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from miles.backends.megatron_utils.model_provider import _apply_bridge_runtime_config
 
@@ -28,6 +28,9 @@ def _runtime_args(**overrides):
         "fp8": "e4m3",
         "fp8_recipe": "mxfp8",
         "attention_backend": "auto",
+        "spec": ["miles_plugins.models.deepseek_v4.deepseek_v4", "get_dsv4_spec"],
+        "dsv4_impl": "megatron",
+        "experimental_attention_variant": "dsv4_hybrid",
         "dsa_kernel_backend": "cudnn",
         "mtp_num_layers": None,
         "dsv4_mxfp4_qat": False,
@@ -66,6 +69,28 @@ def test_bridge_runtime_resolves_native_dsv4_kernel_default():
     _apply_bridge_runtime_config(provider, _runtime_args(dsa_kernel_backend=None))
 
     assert provider.dsa_kernel_backend == "cudnn"
+
+
+def test_bridge_runtime_binds_legacy_dsv4_spec_before_resolving_kernel_default():
+    provider = _provider()
+    args = _runtime_args(
+        dsv4_impl="miles",
+        experimental_attention_variant="dsv4",
+        tensor_model_parallel_size=2,
+        context_parallel_size=2,
+        dsa_kernel_backend=None,
+    )
+    layer_spec = Mock()
+    with patch("miles.backends.megatron_utils.model_provider.import_module", return_value=layer_spec) as import_spec:
+        _apply_bridge_runtime_config(provider, args)
+
+    import_spec.assert_called_once_with(args.spec)
+    assert provider.experimental_attention_variant == "dsv4"
+    assert provider.dsa_kernel_backend == "none"
+    assert provider.tensor_model_parallel_size == 2
+    assert provider.context_parallel_size == 2
+    assert provider.transformer_layer_spec(provider, vp_stage=0) is layer_spec.return_value
+    layer_spec.assert_called_once_with(args, provider, vp_stage=0)
 
 
 def test_bridge_runtime_installs_mxfp4_qat_when_enabled():
