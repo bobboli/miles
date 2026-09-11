@@ -2754,7 +2754,10 @@ def parse_args(add_custom_arguments=None):
         args.compress_ratios = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
-            args.compress_ratios = getattr(hf_config, "compress_ratios", None)
+            # Native HF configs may expose layer_types instead of the legacy compression schedule.
+            args.compress_ratios = getattr(hf_config, "compress_ratios", None) or getattr(
+                args, "csa_compress_ratios", None
+            )
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
