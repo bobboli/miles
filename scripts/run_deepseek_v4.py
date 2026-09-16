@@ -4,7 +4,7 @@ DeepSeek V4 training script.
 Supports:
   - DeepSeek-V4-Flash             Official Preview release from deepseek-ai
                                   (FP8 attention/shared weights and packed-MXFP4
-                                  routed experts). Supports direct-HF P1 with
+                                  routed experts). Supports direct-HF RL with
                                   trainer-owned MXFP8 rollout.
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
@@ -25,7 +25,7 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Direct-HF P1 (no offline weight conversion):
+  2. Direct-HF initialization with MXFP8 rollout (no offline weight conversion):
        python scripts/run_deepseek_v4.py full-train \
            --model-name DeepSeek-V4-Flash \
            --init-model-source hf --rollout-weight-source trainer \
