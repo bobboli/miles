@@ -98,13 +98,29 @@ python scripts/run_deepseek_v4.py full-train \
    --train-precision mxfp8 --rollout-precision mxfp8
 ```
 
-Trainer-owned rollout currently requires `mxfp8`; its generated rollout directory
-contains configuration/tokenizer metadata rather than converted weight files.
+Trainer-owned MXFP8 rollout uses a generated directory containing configuration/tokenizer
+metadata rather than converted weight files. Trainer-owned `blockwise-fp8` rollout
+uses the source HF metadata, with routed experts selected by `--rollout-expert-dtype`:
+`auto` reads `expert_dtype` for the official Flash releases, `fp4` selects packed
+MXFP4 weights with MXFP8 activations, and `fp8` selects FP8 experts. Attention,
+dense layers and shared experts retain blockwise FP8. BF16 rollout requires
+checkpoint-owned initialization; it does not accept a quantized expert override.
 Checkpoint-owned rollout uses the corresponding BF16, blockwise-FP8, or MXFP8 checkpoint.
+
+`--train-precision mxfp4-qat` adds routed-expert MXFP4 fake quantization to the
+MXFP8 training recipe. Only routed-expert weights are quantized and dequantized
+before their MXFP8 GEMMs, with a straight-through estimator for the weight gradient.
+The optimizer's master weights are not stored in MXFP4; attention, shared experts
+and activations do not receive this MXFP4 fake quantization. This option requires
+Blackwell and packed MXFP4 rollout experts. It replaces the launcher's separate
+`--dsv4-mxfp4-qat` switch; the launcher still passes that internal flag to the trainer.
+For example, use `--train-precision mxfp4-qat --rollout-precision blockwise-fp8
+--rollout-expert-dtype fp4` with the official Flash checkpoint and trainer-owned rollout.
 
 With empty backend overrides, MXFP8 rollout selects `flashinfer_cutlass` for FP8
 GEMMs and `flashinfer_trtllm_routed` for MoE. Other precisions select `auto` for
-GEMMs and Flash MoE (`deep_gemm` for Pro MoE). A nonempty
+GEMMs. MoE defaults to `flashinfer_mxfp4` for packed MXFP4 experts, then `deep_gemm`
+for Pro, otherwise `auto` for Flash. A nonempty
 `--sglang-fp8-gemm-backend` or `--sglang-moe-runner-backend` overrides that default;
 explicit `auto` delegates selection to SGLang instead of applying the launcher default.
 `--enable-mis` separately enables training-side importance sampling for train/rollout

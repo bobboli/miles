@@ -5,7 +5,7 @@ Supports:
   - DeepSeek-V4-Flash             Official Preview release from deepseek-ai
                                   (FP8 attention/shared weights and packed-MXFP4
                                   routed experts). Supports direct-HF RL with
-                                  trainer-owned MXFP8 rollout.
+                                  MXFP8 or packed-MXFP4 routed experts.
   - DeepSeek-V4-Flash-FP8         Public FP8 repackage of deepseek-ai/DeepSeek-V4-Flash
                                   (sgl-project/DeepSeek-V4-Flash-FP8, 291B, 43 layers).
                                   Verified full-model profiles: 8 nodes x 8 GPUs on H200
@@ -43,6 +43,7 @@ Usage patterns:
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
 """
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -77,6 +78,7 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-4layer", "DeepSeek-V4-Flash-0731")
 _FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
+_MXFP4_QAT_MODEL_NAMES = _MXFP4_MODEL_NAMES
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -153,15 +155,24 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     # Training GEMM recipe; model parameters remain BF16, with sensitive parameters
     # kept in FP32. FP8 recipes keep the DSA indexer's weights projection in BF16.
-    train_precision: Literal["bf16", "blockwise-fp8", "mxfp8"] = "blockwise-fp8"
+    # mxfp4-qat additionally fake-quantizes ONLY routed-expert weights to MXFP4
+    # and dequantizes them with an STE backward. GEMMs still use MXFP8; attention,
+    # shared experts and activations do not receive this MXFP4 fake quantization.
+    train_precision: Literal["bf16", "blockwise-fp8", "mxfp8", "mxfp4-qat"] = "blockwise-fp8"
     # Rollout weight/activation quantization, independent of the training recipe.
     # BF16 uses a dequantized checkpoint; MXFP8 uses 32-element scaling groups,
     # with a metadata-only schema when the trainer supplies the rollout weights.
     rollout_precision: Literal["bf16", "blockwise-fp8", "mxfp8"] = "blockwise-fp8"
+    # Routed experts only: fp4 means packed MXFP4 weights x MXFP8 activations.
+    # In blockwise-fp8 rollout, auto reads the official checkpoint's expert_dtype;
+    # attention/dense/shared-expert weights remain blockwise FP8. MXFP8 rollout
+    # uses MXFP8 experts instead; BF16 rollout does not accept an expert override.
+    rollout_expert_dtype: Literal["auto", "fp4", "fp8"] = "auto"
 
     # SGLang backend overrides. Empty selects the launcher defaults below:
     # MXFP8 -> flashinfer_cutlass GEMM + flashinfer_trtllm_routed MoE;
-    # otherwise GEMM -> auto, MoE -> deep_gemm for Pro, auto for Flash.
+    # otherwise GEMM -> auto, MoE -> flashinfer_mxfp4 for packed MXFP4 experts,
+    # then deep_gemm for Pro, auto for Flash with FP8/BF16 experts.
     # A nonempty value wins; explicit "auto" delegates selection to SGLang.
     sglang_moe_runner_backend: str = ""
     sglang_fp8_gemm_backend: str = ""
@@ -182,7 +193,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
         if self.hardware in ("H100", "H200"):
-            assert "mxfp8" not in (self.train_precision, self.rollout_precision), "MXFP8 requires Blackwell"
+            assert self.train_precision not in ("mxfp8", "mxfp4-qat") and self.rollout_precision != "mxfp8", (
+                "MXFP8 training/rollout and MXFP4 QAT require Blackwell"
+            )
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         assert self.cp_size is None or self.cp_size >= 1, f"cp_size must be at least 1, got {self.cp_size}"
@@ -231,6 +244,28 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         return self.bf16_name
 
 
+def _resolve_rollout_expert_dtype(args: ScriptArgs, rollout_checkpoint: str) -> Literal["fp4", "fp8"]:
+    """Resolve the routed-expert layout shared by SGLang and online sync."""
+    if args.rollout_precision == "bf16" and args.rollout_expert_dtype != "auto":
+        raise ValueError("BF16 rollout does not support --rollout-expert-dtype overrides.")
+    if args.rollout_precision == "mxfp8" and args.rollout_expert_dtype == "fp4":
+        raise ValueError("MXFP4 experts require --rollout-precision blockwise-fp8.")
+    if args.rollout_expert_dtype != "auto":
+        return args.rollout_expert_dtype
+    if args.rollout_precision != "blockwise-fp8":
+        return "fp8"
+    if args.model_name not in _MXFP4_MODEL_NAMES:
+        return "fp8"
+
+    config_path = Path(rollout_checkpoint) / "config.json"
+    with config_path.open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    expert_dtype = config.get("expert_dtype", "fp8")
+    if expert_dtype not in ("fp4", "fp8"):
+        raise ValueError(f"Unsupported expert_dtype={expert_dtype!r} in {config_path}")
+    return expert_dtype
+
+
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
     U = args.create_backend()
@@ -267,9 +302,11 @@ def _trainer_checkpoint_path(args: ScriptArgs) -> str:
 
 def _rollout_checkpoint_path(args: ScriptArgs) -> str:
     if args.rollout_weight_source == "trainer":
-        if args.rollout_precision != "mxfp8":
-            raise ValueError("Trainer-owned DeepSeek-V4 rollout requires --rollout-precision mxfp8.")
-        return _mxfp8_schema_path(args, local=True)
+        if args.rollout_precision == "mxfp8":
+            return _mxfp8_schema_path(args, local=True)
+        if args.rollout_precision == "bf16":
+            raise ValueError("BF16 rollout requires --rollout-weight-source checkpoint and a BF16 checkpoint.")
+        return _local_hf_checkpoint_path(args)
     if args.rollout_precision == "blockwise-fp8" and args.hf_checkpoint is not None:
         return _local_hf_checkpoint_path(args)
     return str(Path(args.model_local_dir) / args.rollout_name)
@@ -543,18 +580,26 @@ def _parallel_flags(
 
 def _train(args: ScriptArgs):
     U = args.create_backend()
-    if "mxfp8" in (args.train_precision, args.rollout_precision):
+    if args.train_precision in ("mxfp8", "mxfp4-qat") or args.rollout_precision == "mxfp8":
         assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if args.init_model_source == "hf" and args.dsv4_impl != "megatron":
         raise ValueError("Direct-HF DeepSeek-V4 training requires --dsv4-impl megatron.")
 
     rollout_checkpoint = _rollout_checkpoint_path(args)
     trainer_checkpoint = _trainer_checkpoint_path(args)
+    rollout_expert_dtype = _resolve_rollout_expert_dtype(args, rollout_checkpoint)
+    rollout_fp4_experts = rollout_expert_dtype == "fp4"
+    if args.train_precision == "mxfp4-qat":
+        assert args.model_name in _MXFP4_QAT_MODEL_NAMES, "MXFP4 QAT requires a packed-MXFP4 DSV4 checkpoint."
+        assert rollout_fp4_experts, "MXFP4 QAT requires packed MXFP4 routed experts in rollout."
 
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
     args.hf_checkpoint = rollout_checkpoint
-    print(f"[precision] train={args.train_precision}, rollout={args.rollout_precision}")
+    print(
+        f"[precision] train={args.train_precision}, rollout={args.rollout_precision}, "
+        f"rollout_expert_dtype={rollout_expert_dtype}"
+    )
     print(
         f"running on {args.num_nodes} nodes "
         f"({args.actor_num_nodes} actor nodes x {args.actor_num_gpus_per_node} GPUs/node, "
@@ -675,6 +720,8 @@ def _train(args: ScriptArgs):
         sglang_fp8_gemm_backend = "auto"
     if args.rollout_precision == "mxfp8":
         sglang_moe_runner_backend = "flashinfer_trtllm_routed"
+    elif rollout_fp4_experts:
+        sglang_moe_runner_backend = "flashinfer_mxfp4"
     elif args.model_name == "DeepSeek-V4-Pro-FP8":
         sglang_moe_runner_backend = "deep_gemm"
     else:
@@ -708,7 +755,7 @@ def _train(args: ScriptArgs):
         )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        "SGLANG_DSV4_FP4_EXPERTS": "0",
+        "SGLANG_DSV4_FP4_EXPERTS": "1" if rollout_fp4_experts else "0",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
@@ -744,6 +791,10 @@ def _train(args: ScriptArgs):
         "--rollout-health-check-interval 300 "
         "--rollout-health-check-timeout 300 "
     )
+    if rollout_fp4_experts:
+        misc_args += "--rollout-fp4-experts "
+    if args.train_precision == "mxfp4-qat":
+        misc_args += "--dsv4-mxfp4-qat "
     if args.colocate:
         misc_args += "--colocate "
     else:
@@ -782,7 +833,7 @@ def _train(args: ScriptArgs):
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         }
 
-    if args.train_precision == "mxfp8":
+    if args.train_precision in ("mxfp8", "mxfp4-qat"):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe mxfp8 "
     elif args.train_precision == "blockwise-fp8":
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "

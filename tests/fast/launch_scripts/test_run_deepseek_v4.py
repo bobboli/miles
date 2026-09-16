@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -154,7 +155,7 @@ def test_direct_hf_full_train_skips_offline_weight_conversion(tmp_path, monkeypa
 
 
 def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkeypatch):
-    module, args = _direct_hf_args(tmp_path)
+    module, args = _direct_hf_args(tmp_path, rollout_precision="blockwise-fp8")
     source = tmp_path / "DeepSeek-V4-Flash"
     source.mkdir()
     (source / "config.json").write_text('{"expert_dtype": "fp4"}', encoding="utf-8")
@@ -166,15 +167,17 @@ def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkey
 
     extra_env_vars = execute_train.call_args.kwargs["extra_env_vars"]
     assert extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] == "1"
-    assert extra_env_vars["SGLANG_DSV4_FP4_EXPERTS"] == "0"
 
 
 def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
-    module, args = _direct_hf_args(tmp_path)
+    module, mxfp8_args = _direct_hf_args(tmp_path)
+    _, mxfp4_args = _direct_hf_args(tmp_path, rollout_precision="blockwise-fp8")
     source = tmp_path / "DeepSeek-V4-Flash"
 
-    assert module._trainer_checkpoint_path(args) == str(source)
-    assert module._rollout_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+    assert module._trainer_checkpoint_path(mxfp8_args) == str(source)
+    assert module._rollout_checkpoint_path(mxfp8_args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+    assert module._trainer_checkpoint_path(mxfp4_args) == str(source)
+    assert module._rollout_checkpoint_path(mxfp4_args) == str(source)
 
 
 def test_direct_hf_prepare_command_copies_seed_and_schema_to_worker_storage(tmp_path):
@@ -238,5 +241,52 @@ def test_explicit_auto_delegates_backend_selection_to_sglang(monkeypatch, tmp_pa
 @pytest.mark.parametrize("field", ["train_precision", "rollout_precision"])
 def test_mxfp8_requires_blackwell(field):
     module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4.py")
-    with pytest.raises(AssertionError, match="MXFP8 requires Blackwell"):
+    with pytest.raises(AssertionError, match="require Blackwell"):
         module.ScriptArgs(hardware="H200", **{field: "mxfp8"})
+
+
+@pytest.mark.parametrize("train_precision", ["mxfp8", "mxfp4-qat"])
+def test_packed_mxfp4_rollout_with_optional_qat(tmp_path, monkeypatch, train_precision):
+    module, args = _direct_hf_args(tmp_path, rollout_precision="blockwise-fp8")
+    args.train_precision = train_precision
+    args.skip_saving = True
+    source = tmp_path / "DeepSeek-V4-Flash"
+    source.mkdir()
+    (source / "config.json").write_text(json.dumps({"expert_dtype": "fp4"}), encoding="utf-8")
+    execute_train = Mock()
+    backend = Mock(execute_train=execute_train)
+    monkeypatch.setattr(args, "create_backend", lambda: backend)
+
+    module._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    assert "--megatron-to-hf-mode bridge" in train_args
+    assert "--dsv4-impl megatron" in train_args
+    assert "--qkv-format thd" in train_args
+    assert ("--dsv4-mxfp4-qat" in train_args) == (train_precision == "mxfp4-qat")
+    assert "--fp8-recipe mxfp8" in train_args
+    assert "--rollout-fp4-experts" in train_args
+    assert "--sglang-moe-runner-backend flashinfer_mxfp4" in train_args
+    assert "--sglang-fp8-gemm-backend auto" in train_args
+    assert execute_train.call_args.kwargs["extra_env_vars"]["SGLANG_DSV4_FP4_EXPERTS"] == "1"
+
+
+def test_mxfp4_qat_requires_blackwell():
+    module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4.py")
+    with pytest.raises(AssertionError, match="require Blackwell"):
+        module.ScriptArgs(hardware="H200", train_precision="mxfp4-qat")
+
+
+def test_mxfp4_qat_rejects_rollout_without_packed_experts(tmp_path):
+    module, args = _direct_hf_args(tmp_path)
+    args.train_precision = "mxfp4-qat"
+    with pytest.raises(AssertionError, match="requires packed MXFP4 routed experts"):
+        module._train(args)
+
+
+@pytest.mark.parametrize(("precision", "expert_dtype"), [("mxfp8", "fp4"), ("bf16", "fp4"), ("bf16", "fp8")])
+def test_incompatible_rollout_precision_and_expert_override_are_rejected(tmp_path, precision, expert_dtype):
+    module, args = _direct_hf_args(tmp_path, rollout_precision=precision)
+    args.rollout_expert_dtype = expert_dtype
+    with pytest.raises(ValueError):
+        module._resolve_rollout_expert_dtype(args, str(tmp_path))
