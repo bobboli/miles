@@ -105,9 +105,9 @@ def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkey
     assert extra_env_vars["SGLANG_DSV4_FP4_EXPERTS"] == "0"
 
 
-def test_trainer_owned_rollout_paths_select_source_and_p1_schema(tmp_path):
-    module, p1 = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
     source = tmp_path / "DeepSeek-V4-Flash"
 
-    assert module._trainer_checkpoint_path(p1) == str(source)
-    assert module._rollout_checkpoint_path(p1) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+    assert module._trainer_checkpoint_path(args) == str(source)
+    assert module._rollout_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
