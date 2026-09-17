@@ -1,19 +1,23 @@
 import dataclasses
 import inspect
 import itertools
+import json
+import logging
 from pathlib import Path
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
-from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 from miles.utils import megatron_bridge_utils
+from miles.utils.hf_parameter_names import get_param_name_remap
 from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
+
+logger = logging.getLogger(__name__)
 
 
 class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
@@ -24,13 +28,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         bridge_checkpoint = _select_bridge_checkpoint(self.args)
         self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
-
-    def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(
-            self.model_name,
-            q_lora_rank=self.args.q_lora_rank,
-            dsv4_checkpoint_layout=True,
-        )
+        self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
@@ -55,6 +53,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     pass
                 return
 
+            named_weights = (
+                (self._remap_hf_name(hf_name), weight, megatron_name)
+                for hf_name, weight, megatron_name in named_weights
+            )
             named_weights = self._postprocess_and_quantize(named_weights, "base")
             # Group by the (tuple of) source names so quantize's weight + scales land in one unit.
             for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
@@ -131,6 +133,20 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     yield q_hf_name, q_weight, megatron_param_names
             else:
                 yield hf_name, weight, megatron_param_names
+
+
+def _load_checkpoint_name_remap(checkpoint):
+    """Resolve export names from the checkpoint's architecture and tensor namespace."""
+    config_path = Path(checkpoint) / "config.json"
+    index_path = Path(checkpoint) / "model.safetensors.index.json"
+    if not config_path.is_file() or not index_path.is_file():
+        logger.warning(
+            "Checkpoint %s has no local config or safetensors index; preserving Bridge export names.", checkpoint
+        )
+        return lambda name: name
+    with index_path.open(encoding="utf-8") as index_file:
+        weight_map = json.load(index_file)["weight_map"]
+    return get_param_name_remap(str(config_path), weight_map)
 
 
 def _select_bridge_checkpoint(args):

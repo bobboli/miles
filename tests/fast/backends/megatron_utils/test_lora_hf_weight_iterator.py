@@ -49,7 +49,7 @@ class TestHfWeightIteratorFactory:
             iterator = self._create("raw")
             assert isinstance(iterator, HfWeightIteratorDirect)
 
-    def test_dsv4_bridge_uses_checkpoint_layout_atomic_groups(self):
+    def test_dsv4_bridge_uses_canonical_atomic_groups(self):
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
 
         iterator = object.__new__(HfWeightIteratorBridge)
@@ -57,10 +57,10 @@ class TestHfWeightIteratorFactory:
         iterator.args = Namespace(q_lora_rank=None)
 
         groups = {group.key: group.suffixes for group in iterator._hf_atomic_update_groups()}
-        assert groups["wqkv_a"] == (".attn.wq_a.weight", ".attn.wkv.weight")
+        assert groups["wqkv_a"] == (".self_attn.wq_a.weight", ".self_attn.wkv.weight")
         assert groups["compressor_wkv_gate"] == (
-            ".attn.compressor.wkv.weight",
-            ".attn.compressor.wgate.weight",
+            ".self_attn.compressor.wkv.weight",
+            ".self_attn.compressor.wgate.weight",
         )
 
     def test_invalid_mode_raises(self):
