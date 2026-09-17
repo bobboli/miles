@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -91,7 +92,7 @@ def test_direct_hf_full_train_skips_offline_weight_conversion(tmp_path, monkeypa
 
 
 def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkeypatch):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
     source = tmp_path / "DeepSeek-V4-Flash"
     source.mkdir()
     (source / "config.json").write_text('{"expert_dtype": "fp4"}', encoding="utf-8")
@@ -102,12 +103,36 @@ def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkey
 
     extra_env_vars = execute_train.call_args.kwargs["extra_env_vars"]
     assert extra_env_vars["MILES_SGLANG_DUMMY_LOAD"] == "1"
-    assert extra_env_vars["SGLANG_DSV4_FP4_EXPERTS"] == "0"
 
 
 def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, mxfp8_args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    _, mxfp4_args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
     source = tmp_path / "DeepSeek-V4-Flash"
 
-    assert module._trainer_checkpoint_path(args) == str(source)
-    assert module._rollout_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+    assert module._trainer_checkpoint_path(mxfp8_args) == str(source)
+    assert module._rollout_checkpoint_path(mxfp8_args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+    assert module._trainer_checkpoint_path(mxfp4_args) == str(source)
+    assert module._rollout_checkpoint_path(mxfp4_args) == str(source)
+
+
+def test_mxfp4_qat_uses_native_hybrid_trainer_and_packed_mxfp4_rollout(tmp_path, monkeypatch):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=False)
+    args.dsv4_mxfp4_qat = True
+    args.skip_saving = True
+    source = tmp_path / "DeepSeek-V4-Flash"
+    source.mkdir()
+    (source / "config.json").write_text(json.dumps({"expert_dtype": "fp4"}), encoding="utf-8")
+    execute_train = Mock()
+    monkeypatch.setattr(module.U, "execute_train", execute_train)
+
+    module._train(args)
+
+    train_args = execute_train.call_args.kwargs["train_args"]
+    assert "--megatron-to-hf-mode bridge" in train_args
+    assert "--dsv4-impl megatron" in train_args
+    assert "--qkv-format thd" in train_args
+    assert "--dsv4-mxfp4-qat" in train_args
+    assert "--fp8-recipe mxfp8" in train_args
+    assert "--rollout-fp4-experts" in train_args
+    assert execute_train.call_args.kwargs["extra_env_vars"]["SGLANG_DSV4_FP4_EXPERTS"] == "1"
