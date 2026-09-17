@@ -28,6 +28,10 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         bridge_checkpoint = _select_bridge_checkpoint(self.args)
         self._bridge = AutoBridge.from_hf_pretrained(bridge_checkpoint, trust_remote_code=True)
+        # Bridge may export official DSV4 checkpoint names, e.g. layers.0.attn.wq_a.weight,
+        # while SGLang's model uses model.layers.0.self_attn.wq_a.weight.
+        # Resolve the mapping once so postprocessing, quantization, and bucketing
+        # all use SGLang's model namespace.
         self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
 
         if (
