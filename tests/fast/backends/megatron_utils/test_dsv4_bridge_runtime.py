@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from miles.backends.megatron_utils.model_provider import _apply_bridge_runtime_config
 
 
@@ -57,9 +59,10 @@ def test_bridge_runtime_preserves_native_variant_and_disables_unrequested_mtp():
     assert provider.mtp_num_layers is None
 
 
-def test_bridge_runtime_resolves_native_dsv4_kernel_default():
+@pytest.mark.parametrize("backend", [None, "none", "tilelang", "cudnn"])
+def test_bridge_runtime_resolves_native_dsv4_kernel_default(backend):
     provider = _provider()
 
-    _apply_bridge_runtime_config(provider, _runtime_args(dsa_kernel_backend=None))
+    _apply_bridge_runtime_config(provider, _runtime_args(dsa_kernel_backend=backend, dsa_attention_backend="tilelang"))
 
-    assert provider.dsa_kernel_backend == "cudnn"
+    assert provider.dsa_kernel_backend == (backend or "cudnn")
