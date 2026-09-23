@@ -86,7 +86,7 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
 
         def export_hf_weights(model, *, conversion_tasks, weight_dtype=None, **kwargs):
             assert weight_dtype is None
-            assert all(task.weight_dtype == torch.bfloat16 for task in conversion_tasks)
+            assert all(task.weight_dtype == torch.float32 for task in conversion_tasks)
             return iter([(source_name, weight, megatron_name)])
 
         iterator._bridge.export_hf_weights = export_hf_weights
@@ -125,11 +125,11 @@ def test_plain_export_dtype_preserves_owner_and_receiver_tasks():
         _process_conversion_tasks(
             [owner, receiver],
             {"vp_stages.0.weight": replacement_weight},
-            weight_dtype=torch.bfloat16,
+            weight_dtype=torch.float32,
         )
     )
 
-    assert all(task.weight_dtype == torch.bfloat16 for task in tasks)
+    assert all(task.weight_dtype == torch.float32 for task in tasks)
     assert tasks[0].param_weight is replacement_weight
     assert tasks[1].param_weight is None
     assert owner.param_weight is original_weight
