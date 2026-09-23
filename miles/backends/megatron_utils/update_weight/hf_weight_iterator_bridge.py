@@ -5,6 +5,8 @@ import json
 import logging
 from pathlib import Path
 
+import torch
+
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
@@ -39,10 +41,11 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
             # Newer Bridge exports can restore the checkpoint's quantized layout.
-            # Miles owns rollout quantization, so request plain model-dtype weights
-            # on the tasks, including PP receivers that have no local parameter.
+            # Miles owns rollout quantization. Export FP32 to preserve both BF16
+            # weights and FP32-only parameters (e.g. DSV4 APE and attention sinks),
+            # including on PP receivers that have no local parameter.
             export_dtype = (
-                self.args.params_dtype
+                torch.float32
                 if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters
                 else None
             )
