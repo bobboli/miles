@@ -38,7 +38,17 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            # Newer Bridge exports can restore the checkpoint's quantized layout.
+            # Miles owns rollout quantization, so request plain model-dtype weights
+            # on the tasks, including PP receivers that have no local parameter.
+            export_dtype = (
+                self.args.params_dtype
+                if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters
+                else None
+            )
+            conversion_tasks = _process_conversion_tasks(
+                conversion_tasks, renamed_megatron_local_weights, weight_dtype=export_dtype
+            )
             named_weights = self._bridge.export_hf_weights(
                 self.model,
                 cpu=False,
@@ -164,11 +174,13 @@ def _select_bridge_checkpoint(args):
     return args.hf_checkpoint
 
 
-def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
+def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict, *, weight_dtype=None):
     def _handle_one(task):
         if task is None:
             # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
             return task
+        if weight_dtype is not None:
+            task = dataclasses.replace(task, weight_dtype=weight_dtype)
         if task.param_weight is None:
             return task
 
