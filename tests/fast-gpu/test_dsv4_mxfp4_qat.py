@@ -11,7 +11,7 @@ from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
     mxfp4_quantize_dequantize,
 )
 
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"])
+register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
 
 
 def _dequantize_reference(packed: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
