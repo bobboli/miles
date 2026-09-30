@@ -10,7 +10,6 @@ from tests.fast.launch_scripts.py_harness import (
     install_command_recorder,
 )
 
-
 _SINGLE_NODE_4LAYER = {
     "hardware": "H200",
     "model_name": "DeepSeek-V4-Flash-FP8-4layer",
@@ -162,7 +161,8 @@ def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkey
     source.mkdir()
     (source / "config.json").write_text('{"expert_dtype": "fp4"}', encoding="utf-8")
     execute_train = Mock()
-    monkeypatch.setattr(module.U, "execute_train", execute_train)
+    backend = Mock(execute_train=execute_train)
+    monkeypatch.setattr(args, "create_backend", lambda: backend)
 
     module._train(args)
 
@@ -177,3 +177,17 @@ def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
 
     assert module._trainer_checkpoint_path(args) == str(source)
     assert module._rollout_checkpoint_path(args) == str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema")
+
+
+def test_direct_hf_prepare_command_copies_seed_and_schema_to_worker_storage(tmp_path):
+    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    args.model_local_dir = str(tmp_path / "worker")
+
+    command = module._prepare_cmd(args)["trainer"]
+
+    assert str(tmp_path / "DeepSeek-V4-Flash") in command
+    assert str(tmp_path / "worker" / "DeepSeek-V4-Flash") in command
+    assert str(tmp_path / "DeepSeek-V4-Flash-MXFP8-schema") in command
+    assert str(tmp_path / "worker" / "DeepSeek-V4-Flash-MXFP8-schema") in command
+    assert args.torch_dist_name not in command
+    assert module._prepare_cmd(module.ScriptArgs(hardware="B300")) == {}
