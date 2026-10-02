@@ -5,11 +5,13 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
     _iter_mm_tower_units,
 )
+from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import megatron_bridge_utils
 from miles.utils.hf_parameter_names import get_checkpoint_weight_map, get_param_name_remap
 from miles.utils.lora.utils import is_lora_weight_name
@@ -34,22 +36,19 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
         # Resolve the mapping once so postprocessing, quantization, and bucketing
         # all use SGLang's model namespace.
         self._remap_hf_name = _load_checkpoint_name_remap(bridge_checkpoint)
+        self._export_dtypes = None
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-            # Newer Bridge exports can restore the checkpoint's quantized layout.
-            # Miles owns rollout quantization. Export FP32 to preserve both BF16
-            # weights and FP32-only parameters (e.g. DSV4 APE and attention sinks),
-            # including on PP receivers that have no local parameter.
-            export_dtype = (
-                torch.float32
-                if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters
-                else None
-            )
+            # Explicit per-parameter dtypes disable checkpoint requantization
+            # while preserving BF16 weights and FP32-only parameters on all PP ranks.
+            if "weight_dtype" in inspect.signature(self._bridge.export_hf_weights).parameters:
+                if self._export_dtypes is None:
+                    self._export_dtypes = _gather_export_dtypes(conversion_tasks)
             conversion_tasks = _process_conversion_tasks(
-                conversion_tasks, renamed_megatron_local_weights, weight_dtype=export_dtype
+                conversion_tasks, renamed_megatron_local_weights, weight_dtypes=self._export_dtypes
             )
             named_weights = self._bridge.export_hf_weights(
                 self.model,
@@ -172,13 +171,36 @@ def _select_bridge_checkpoint(args):
     return args.hf_checkpoint
 
 
-def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict, *, weight_dtype=None):
+def _gather_export_dtypes(conversion_tasks):
+    """Share owner parameter dtypes with PP receivers that have no local tensor."""
+    local_dtypes = {
+        task.global_param_name: (
+            torch.float32 if getattr(task.param_weight, "keep_in_fp32", False) else task.param_weight.dtype
+        )
+        for task in conversion_tasks
+        if task is not None and task.param_weight is not None
+    }
+    pp = get_parallel_state().pp
+    gathered = [local_dtypes]
+    if pp.size > 1:
+        gathered = [None] * pp.size
+        dist.all_gather_object(gathered, local_dtypes, group=pp.gloo_group or pp.group)
+    dtypes = {}
+    for rank_dtypes in gathered:
+        for name, dtype in rank_dtypes.items():
+            if name in dtypes and dtypes[name] != dtype:
+                raise ValueError(f"Inconsistent export dtype for {name}: {dtypes[name]} vs {dtype}")
+            dtypes[name] = dtype
+    return dtypes
+
+
+def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict, *, weight_dtypes=None):
     def _handle_one(task):
         if task is None:
             # no HF mapping (e.g. Gemma-4 post_shared_expert_layernorm)
             return task
-        if weight_dtype is not None:
-            task = dataclasses.replace(task, weight_dtype=weight_dtype)
+        if weight_dtypes is not None:
+            task = dataclasses.replace(task, weight_dtype=weight_dtypes[task.global_param_name])
         if task.param_weight is None:
             return task
 

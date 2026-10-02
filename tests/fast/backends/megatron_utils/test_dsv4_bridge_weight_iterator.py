@@ -84,15 +84,19 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
     iterator.args = Namespace(params_dtype=torch.bfloat16)
     iterator.quantization_config = None
     iterator.model = []
+    iterator._export_dtypes = None
     iterator._bridge = Mock()
     iterator._bridge.get_conversion_tasks.return_value = []
     iterator._bridge.export_hf_weights.return_value = iter([(source_name, weight, megatron_name)])
     if plain_export:
-        iterator._bridge.get_conversion_tasks.return_value = [_ExportTask(param_weight=None)]
+        iterator._bridge.get_conversion_tasks.return_value = [
+            _ExportTask(param_weight=torch.empty(2, dtype=torch.bfloat16))
+        ]
+        monkeypatch.setattr(bridge_iterator, "get_parallel_state", lambda: Namespace(pp=Namespace(size=1)))
 
         def export_hf_weights(model, *, conversion_tasks, weight_dtype=None, **kwargs):
             assert weight_dtype is None
-            assert all(task.weight_dtype == torch.float32 for task in conversion_tasks)
+            assert all(task.weight_dtype == torch.bfloat16 for task in conversion_tasks)
             return iter([(source_name, weight, megatron_name)])
 
         iterator._bridge.export_hf_weights = export_hf_weights
@@ -139,6 +143,7 @@ class _ExportTask:
     param_name: str = "weight"
     vp_stage: int | None = 0
     weight_dtype: torch.dtype | None = None
+    global_param_name: str = "decoder.layers.0.weight"
 
 
 def test_plain_export_dtype_preserves_owner_and_receiver_tasks():
@@ -151,11 +156,11 @@ def test_plain_export_dtype_preserves_owner_and_receiver_tasks():
         _process_conversion_tasks(
             [owner, receiver],
             {"vp_stages.0.weight": replacement_weight},
-            weight_dtype=torch.float32,
+            weight_dtypes={owner.global_param_name: torch.bfloat16},
         )
     )
 
-    assert all(task.weight_dtype == torch.float32 for task in tasks)
+    assert all(task.weight_dtype == torch.bfloat16 for task in tasks)
     assert tasks[0].param_weight is replacement_weight
     assert tasks[1].param_weight is None
     assert owner.param_weight is original_weight
