@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from miles.backends.megatron_utils.update_weight import hf_weight_iterator_bridge as bridge_iterator
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import (
@@ -49,11 +50,15 @@ def test_bridge_uses_hf_reference_after_resume(tmp_path):
     assert selected == str(trainer_seed)
 
 
-def test_bridge_resolves_name_remap_from_checkpoint_metadata(tmp_path, monkeypatch):
+@pytest.mark.parametrize("indexed", [True, False])
+def test_bridge_resolves_name_remap_from_checkpoint_metadata(tmp_path, monkeypatch, indexed):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"architectures": ["DeepseekV4ForCausalLM"]}))
     weight_map = {"embed.weight": "model.safetensors"}
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    if indexed:
+        (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    else:
+        save_file({"embed.weight": torch.zeros(2, 2)}, tmp_path / "model.safetensors")
     remap = Mock()
     resolve = Mock(return_value=remap)
     monkeypatch.setattr(bridge_iterator, "get_param_name_remap", resolve)
@@ -77,6 +82,7 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
     source_name = "layers.0.attn.wq_a.weight" if native_names else hf_name
     iterator = object.__new__(HfWeightIteratorBridge)
     iterator.args = Namespace(params_dtype=torch.bfloat16)
+    iterator.quantization_config = None
     iterator.model = []
     iterator._bridge = Mock()
     iterator._bridge.get_conversion_tasks.return_value = []
@@ -93,18 +99,38 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
     iterator._remap_hf_name = Mock(return_value=hf_name)
     received = []
 
-    def postprocess(named_weights, weight_type):
-        assert weight_type == "base"
-        received.extend(named_weights)
-        return iter(received)
+    def postprocess(*, args, megatron_param_name, hf_param_name, param):
+        received.append((hf_param_name, param, megatron_param_name))
+        return param
 
-    iterator._postprocess_and_quantize = postprocess
+    monkeypatch.setattr(bridge_iterator, "postprocess_hf_param", postprocess)
     monkeypatch.setattr(bridge_iterator.megatron_bridge_utils, "patch_megatron_model", lambda model: nullcontext())
     monkeypatch.setattr(bridge_iterator, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
 
     assert list(iterator._iter_hf_param_units({}, materialize=True)) == [[(hf_name, weight)]]
     assert received == [(hf_name, weight, megatron_name)]
     iterator._remap_hf_name.assert_called_once_with(source_name)
+
+
+def test_bridge_canonicalizes_adapter_names_before_postprocessing(monkeypatch):
+    weight = object()
+    source_name = "layers.0.attn.wq_a.lora_A.weight"
+    hf_name = "model.layers.0.self_attn.wq_a.lora_A.weight"
+    iterator = object.__new__(HfWeightIteratorBridge)
+    iterator.args = Namespace()
+    iterator.model = []
+    iterator._bridge = Mock()
+    iterator._bridge.export_adapter_weights.return_value = iter([(source_name, weight)])
+    iterator._remap_hf_name = Mock(return_value=hf_name)
+    postprocess = Mock(return_value=weight)
+    monkeypatch.setattr(bridge_iterator, "postprocess_hf_param", postprocess)
+    monkeypatch.setattr(bridge_iterator.megatron_bridge_utils, "patch_megatron_model", lambda model: nullcontext())
+
+    assert iterator._export_current_adapter() == [(hf_name, weight)]
+    iterator._remap_hf_name.assert_called_once_with(source_name)
+    postprocess.assert_called_once_with(
+        args=iterator.args, megatron_param_name=None, hf_param_name=hf_name, param=weight
+    )
 
 
 @dataclass

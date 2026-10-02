@@ -5,6 +5,8 @@ import struct
 from pathlib import Path
 
 import pytest
+import torch
+from safetensors.torch import save_file
 
 from miles.utils.hf_rollout_schema import build_mxfp8_quantization_config, create_mxfp8_rollout_schema
 
@@ -101,3 +103,31 @@ def test_schema_refuses_directory_with_weight_payloads(tmp_path):
 
     with pytest.raises(ValueError, match="containing weight payloads"):
         create_mxfp8_rollout_schema(source, destination)
+
+
+@pytest.mark.parametrize(
+    "dtype,width,valid",
+    [(torch.int8, 16, True), (torch.int8, 24, False), (torch.bfloat16, 48, False), (torch.int32, 32, False)],
+)
+def test_schema_validates_unpacked_expert_layout(tmp_path, dtype, width, valid):
+    name = "model.layers.0.mlp.experts.0.gate_proj.weight"
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["TestForCausalLM"]}))
+    save_file({name: torch.zeros(32, width, dtype=dtype)}, tmp_path / "model.safetensors")
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {name: "model.safetensors"}}))
+    if valid:
+        assert build_mxfp8_quantization_config(tmp_path)["modules_to_not_convert"] == []
+    else:
+        with pytest.raises(ValueError, match="Unsupported MXFP8 expert"):
+            build_mxfp8_quantization_config(tmp_path)
+
+
+def test_schema_supports_unindexed_checkpoint(tmp_path):
+    name = "model.embed_tokens.weight"
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["TestForCausalLM"]}))
+    save_file({name: torch.zeros(32, 32, dtype=torch.bfloat16)}, tmp_path / "model.safetensors")
+
+    schema = create_mxfp8_rollout_schema(tmp_path, tmp_path / "schema")
+
+    config = json.loads((schema / "config.json").read_text())
+    assert config["quantization_config"]["modules_to_not_convert"] == ["model.embed_tokens"]
+    assert not list(schema.glob("*.safetensors"))

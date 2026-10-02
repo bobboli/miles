@@ -6,7 +6,7 @@ import shutil
 import struct
 from pathlib import Path
 
-from miles.utils.hf_parameter_names import get_param_name_remap
+from miles.utils.hf_parameter_names import get_checkpoint_weight_map, get_param_name_remap
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
 
 MXFP8_SKIP_WEIGHT_SUBSTRINGS = (
@@ -70,14 +70,14 @@ def _should_use_mxfp8(name: str, metadata: dict, skip_substrings: tuple[str, ...
     if not name.endswith(".weight") or any(part in name for part in skip_substrings):
         return False
     shape = metadata.get("shape", [])
-    if len(shape) < 2 or shape[-1] % MXFP8_GROUP_SIZE != 0:
+    if len(shape) < 2:
         return False
     dtype = metadata.get("dtype")
-    if dtype in _MXFP8_SOURCE_DTYPES:
-        return True
-    # Trainer-owned rollout replaces packed source experts with MXFP8 at the
-    # first sync, so reserve the unpacked target layout in the schema.
-    return dtype == "I8" and ".experts." in name
+    packed_expert = dtype == "I8" and ".experts." in name
+    # Each packed MXFP4 byte holds two weights. Trainer-owned rollout replaces
+    # these with MXFP8, whose alignment applies to the unpacked logical width.
+    width = shape[-1] * (2 if packed_expert else 1)
+    return width % MXFP8_GROUP_SIZE == 0 and (dtype in _MXFP8_SOURCE_DTYPES or packed_expert)
 
 
 def build_mxfp8_quantization_config(
@@ -88,11 +88,10 @@ def build_mxfp8_quantization_config(
     """Derive the SGLang MXFP8 allocation layout from checkpoint headers."""
     source = Path(source_dir)
     config_path = source / "config.json"
-    index_path = source / _WEIGHT_INDEX
-    if not config_path.is_file() or not index_path.is_file():
-        raise FileNotFoundError(f"Expected config.json and {_WEIGHT_INDEX} under {source}")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Expected config.json under {source}")
 
-    weight_map = _load_json(index_path)["weight_map"]
+    weight_map = get_checkpoint_weight_map(source)
     remap_name = get_param_name_remap(str(config_path), weight_map)
     tensor_metadata = _load_tensor_metadata(source, weight_map)
     skip_substrings = (*MXFP8_SKIP_WEIGHT_SUBSTRINGS, *extra_high_precision_layers_hf)
@@ -102,7 +101,15 @@ def build_mxfp8_quantization_config(
         if not source_name.endswith(".weight"):
             continue
         hf_name = remap_name(source_name)
-        if not _should_use_mxfp8(hf_name, metadata, skip_substrings) and ".experts." not in hf_name:
+        if not _should_use_mxfp8(hf_name, metadata, skip_substrings):
+            # Online expert updates do not consult this ignore list; an entry
+            # would not make the producer and the fused MoE allocation agree.
+            if ".experts." in hf_name:
+                raise ValueError(
+                    f"Unsupported MXFP8 expert {source_name}: shape={metadata.get('shape')}, "
+                    f"dtype={metadata.get('dtype')}; expected a quantizable expert with logical width "
+                    f"divisible by {MXFP8_GROUP_SIZE} and no high-precision exclusion"
+                )
             ignored_modules.add(hf_name.removesuffix(".weight"))
 
     return {

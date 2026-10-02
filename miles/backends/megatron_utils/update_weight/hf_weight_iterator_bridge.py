@@ -1,7 +1,6 @@
 import dataclasses
 import inspect
 import itertools
-import json
 import logging
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     _iter_mm_tower_units,
 )
 from miles.utils import megatron_bridge_utils
-from miles.utils.hf_parameter_names import get_param_name_remap
+from miles.utils.hf_parameter_names import get_checkpoint_weight_map, get_param_name_remap
 from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
@@ -70,10 +69,6 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     pass
                 return
 
-            named_weights = (
-                (self._remap_hf_name(hf_name), weight, megatron_name)
-                for hf_name, weight, megatron_name in named_weights
-            )
             named_weights = self._postprocess_and_quantize(named_weights, "base")
             # Group by the (tuple of) source names so quantize's weight + scales land in one unit.
             for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
@@ -128,7 +123,7 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
             megatron_param_names = self._source_names(item)
             # Padding/quantization rules key on a Megatron name; packed grouped-expert tensors use the first source.
             megatron_param_name = megatron_param_names[0] if megatron_param_names else None
-            hf_name = hf_param_name.replace(".base_layer.", ".")
+            hf_name = self._remap_hf_name(hf_param_name).replace(".base_layer.", ".")
             weight = postprocess_hf_param(
                 args=self.args,
                 megatron_param_name=megatron_param_name,
@@ -156,13 +151,13 @@ def _load_checkpoint_name_remap(checkpoint):
     """Resolve export names from the checkpoint's architecture and tensor namespace."""
     config_path = Path(checkpoint) / "config.json"
     index_path = Path(checkpoint) / "model.safetensors.index.json"
-    if not config_path.is_file() or not index_path.is_file():
+    if not config_path.is_file() or (not index_path.is_file() and not any(Path(checkpoint).glob("*.safetensors"))):
         logger.warning(
-            "Checkpoint %s has no local config or safetensors index; preserving Bridge export names.", checkpoint
+            "Checkpoint %s has no local config or safetensors weights/index; preserving Bridge export names.",
+            checkpoint,
         )
         return lambda name: name
-    with index_path.open(encoding="utf-8") as index_file:
-        weight_map = json.load(index_file)["weight_map"]
+    weight_map = get_checkpoint_weight_map(checkpoint)
     return get_param_name_remap(str(config_path), weight_map)
 
 
