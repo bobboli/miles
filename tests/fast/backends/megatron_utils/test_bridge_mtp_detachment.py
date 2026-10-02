@@ -51,6 +51,7 @@ def runtime_args() -> argparse.Namespace:
         fp8=None,
         fp8_recipe=None,
         attention_backend="auto",
+        mtp_num_layers=1,
         moe_token_dispatcher_type="alltoall",
     )
 
