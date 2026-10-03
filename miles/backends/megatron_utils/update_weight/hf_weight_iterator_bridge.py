@@ -40,6 +40,20 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
     def _iter_hf_param_units(self, weights, *, materialize):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
+        # Bridge mappings for the hyper-connection alphas and the hc head read
+        # sibling parameters through the live module, which colocate sleep() has
+        # paused. Point those (tiny) params at resident copies for the export.
+        swapped_params = []
+        for vp_stage, model_chunk in enumerate(self.model):
+            for param_name, param in model_chunk.named_parameters():
+                stripped = strip_param_name_prefix(param_name)
+                if "hyper_connection.alpha" not in stripped and "hc_head" not in stripped:
+                    continue
+                source = renamed_megatron_local_weights.get(f"vp_stages.{vp_stage}.{stripped}")
+                if source is None:
+                    continue
+                swapped_params.append((param, param.data))
+                param.data = source.detach().to(device="cuda", dtype=param.dtype)
         with megatron_bridge_utils.patch_megatron_model(self.model):
             conversion_tasks = self._bridge.get_conversion_tasks(self.model)
             # Explicit per-parameter dtypes disable checkpoint requantization
@@ -74,6 +88,8 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                 unit = [(h, w) for h, w, _m in group if not is_lora_weight_name(h)]
                 if unit:
                     yield unit
+        for param, original_data in swapped_params:
+            param.data = original_data
         yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
     def _export_pp_local_lora(self, adapter):
