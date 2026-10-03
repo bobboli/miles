@@ -56,6 +56,8 @@ app = typer.Typer()
 
 _DEFAULT_MODEL_ORG = {
     "DeepSeek-V4-Flash": "deepseek-ai",
+    # Local 4-layer prune of deepseek-ai/DeepSeek-V4-Flash (native names, MXFP4 experts).
+    "DeepSeek-V4-Flash-4layer": "local",
     "DeepSeek-V4-Flash-FP8": "sgl-project",
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
@@ -66,6 +68,7 @@ _DEFAULT_MODEL_ORG = {
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash": "deepseek-v4-flash",
+    "DeepSeek-V4-Flash-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
@@ -73,7 +76,7 @@ _MEGATRON_MODEL_TYPE = {
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
-_MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-0731")
+_MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-4layer", "DeepSeek-V4-Flash-0731")
 _FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash", "DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
 
 _DSV4_TE_PRECISION_CONFIG = """
@@ -97,6 +100,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash",
+        "DeepSeek-V4-Flash-4layer",
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
