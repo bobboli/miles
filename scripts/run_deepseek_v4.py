@@ -50,7 +50,6 @@ from typing import Literal
 import typer
 
 from miles.utils.external_utils import command_utils
-from miles.utils.hf_rollout_schema import create_mxfp8_rollout_schema
 
 app = typer.Typer()
 
@@ -362,11 +361,12 @@ def _prepare_mxfp8(args: ScriptArgs):
 def _prepare_mxfp8_schema(args: ScriptArgs) -> None:
     if args.rollout_weight_source != "trainer" or not args.rollout_mxfp8:
         return
-    schema_path = create_mxfp8_rollout_schema(
-        source_dir=_hf_checkpoint_path(args),
-        destination_dir=_mxfp8_schema_path(args, local=False),
+    U = args.create_backend()
+    U.exec_command_cpu(
+        f"python tools/convert_hf_to_mxfp8.py --metadata-only "
+        f"--model-dir {_hf_checkpoint_path(args)} "
+        f"--save-dir {_mxfp8_schema_path(args, local=False)} "
     )
-    print(f"[prepare] MXFP8 metadata-only rollout schema: {schema_path}")
 
 
 @app.command()

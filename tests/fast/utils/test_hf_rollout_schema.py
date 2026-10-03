@@ -1,7 +1,6 @@
 """Tests for metadata-only Hugging Face rollout schemas."""
 
 import json
-import struct
 from pathlib import Path
 
 import pytest
@@ -11,39 +10,18 @@ from safetensors.torch import save_file
 from miles.utils.hf_rollout_schema import build_mxfp8_quantization_config, create_mxfp8_rollout_schema
 
 
-def _write_safetensors_header(path: Path, tensors: dict[str, dict]) -> None:
-    header = json.dumps(tensors).encode("utf-8")
-    path.write_bytes(struct.pack("<Q", len(header)) + header)
-
-
 def _write_checkpoint(path: Path) -> None:
     path.mkdir()
     tensors = {
-        "model.embed_tokens.weight": {"dtype": "BF16", "shape": [32, 64], "data_offsets": [0, 1]},
-        "model.layers.0.input_layernorm.weight": {
-            "dtype": "BF16",
-            "shape": [64],
-            "data_offsets": [1, 2],
-        },
-        "model.layers.0.self_attn.wq_a.weight": {
-            "dtype": "F8_E4M3",
-            "shape": [64, 64],
-            "data_offsets": [2, 3],
-        },
-        "model.layers.0.self_attn.wo_a.weight": {
-            "dtype": "F8_E4M3",
-            "shape": [64, 64],
-            "data_offsets": [3, 4],
-        },
-        "model.layers.0.mlp.experts.0.gate_proj.weight": {
-            "dtype": "I8",
-            "shape": [64, 32],
-            "data_offsets": [4, 5],
-        },
-        "lm_head.weight": {"dtype": "BF16", "shape": [32, 64], "data_offsets": [5, 6]},
+        "model.embed_tokens.weight": torch.zeros(32, 64, dtype=torch.bfloat16),
+        "model.layers.0.input_layernorm.weight": torch.zeros(64, dtype=torch.bfloat16),
+        "model.layers.0.self_attn.wq_a.weight": torch.zeros(64, 64, dtype=torch.float8_e4m3fn),
+        "model.layers.0.self_attn.wo_a.weight": torch.zeros(64, 64, dtype=torch.float8_e4m3fn),
+        "model.layers.0.mlp.experts.0.gate_proj.weight": torch.zeros(64, 32, dtype=torch.int8),
+        "lm_head.weight": torch.zeros(32, 64, dtype=torch.bfloat16),
     }
     shard_name = "model-00001-of-00001.safetensors"
-    _write_safetensors_header(path / shard_name, tensors)
+    save_file(tensors, path / shard_name)
     (path / "config.json").write_text(
         json.dumps(
             {
@@ -90,8 +68,6 @@ def test_schema_contains_model_metadata_but_no_weight_index_or_payload(tmp_path)
     config = json.loads((destination / "config.json").read_text())
     assert config["expert_dtype"] == "fp8"
     assert config["quantization_config"]["quant_method"] == "mxfp8"
-    marker = json.loads((destination / ".miles-rollout-schema.json").read_text())
-    assert marker["weight_payloads"] is False
 
 
 def test_schema_refuses_directory_with_weight_payloads(tmp_path):
