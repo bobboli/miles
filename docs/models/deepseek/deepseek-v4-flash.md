@@ -76,6 +76,40 @@ You can override these via the CLI flags above or equivalently via env vars — 
 
 By default the launcher runs **colocated**: training and SGLang rollout share all `--num-nodes × --num-gpus-per-node` GPUs. Pass `--rollout-num-nodes N` (`0 < N < --num-nodes`) to run **disaggregated**: `N` nodes serve rollout, the rest train. The verified parallelism recipes are keyed on the **training** nodes, so the 8-node Flash recipe in disaggregated form is `--num-nodes 16 --rollout-num-nodes 8` (8 train + 8 rollout — the validated layout).
 
+### 3.4 Training and rollout precision
+
+Select the two independently with `--train-precision` and `--rollout-precision`.
+Both accept `bf16`, `blockwise-fp8` (the default), or `mxfp8`; MXFP8 requires Blackwell.
+The training option selects the GEMM recipe, not the optimizer master-weight dtype.
+Model parameters remain BF16, except parameters explicitly kept in FP32, and the
+FP8 recipes leave the DSA indexer's weights projection in BF16.
+
+These options replace the launcher's `--train-fp8` / `--train-mxfp8` and
+`--rollout-fp8` / `--rollout-mxfp8` boolean pairs: both disabled becomes `bf16`,
+only `*-fp8` enabled becomes `blockwise-fp8`, and only `*-mxfp8` enabled becomes `mxfp8`.
+For example, initialize directly from the official HF checkpoint and supply
+MXFP8 rollout weights online, without an offline weight conversion:
+
+```bash
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash --hardware GB300 \
+   --num-nodes 8 --num-gpus-per-node 4 \
+   --init-model-source hf --rollout-weight-source trainer \
+   --train-precision mxfp8 --rollout-precision mxfp8
+```
+
+Trainer-owned rollout currently requires `mxfp8`; its generated rollout directory
+contains configuration/tokenizer metadata rather than converted weight files.
+Checkpoint-owned rollout uses the corresponding BF16, blockwise-FP8, or MXFP8 checkpoint.
+
+With empty backend overrides, MXFP8 rollout selects `flashinfer_cutlass` for FP8
+GEMMs and `flashinfer_trtllm_routed` for MoE. Other precisions select `auto` for
+GEMMs and Flash MoE (`deep_gemm` for Pro MoE). A nonempty
+`--sglang-fp8-gemm-backend` or `--sglang-moe-runner-backend` overrides that default;
+explicit `auto` delegates selection to SGLang instead of applying the launcher default.
+`--enable-mis` separately enables training-side importance sampling for train/rollout
+mismatch correction; it is not a SGLang backend option.
+
 ## 4. Script breakdown
 
 In this section, we explain what `full-train` does under the hood, and how to drive each stage manually if you need to debug or run outside the one-line launcher.

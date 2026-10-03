@@ -114,7 +114,7 @@ def test_the_rollout_profile_follows_the_hardware(monkeypatch, tmp_path, overrid
     assert f"--sglang-ep-size {expected_size}" in train_command
 
 
-def _direct_hf_args(tmp_path, *, rollout_mxfp8: bool):
+def _direct_hf_args(tmp_path, *, rollout_precision="mxfp8"):
     module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4.py")
     return module, module.ScriptArgs(
         model_name="DeepSeek-V4-Flash",
@@ -123,15 +123,13 @@ def _direct_hf_args(tmp_path, *, rollout_mxfp8: bool):
         model_dir=str(tmp_path),
         model_local_dir=str(tmp_path),
         hardware="B300",
-        train_fp8=False,
-        train_mxfp8=True,
-        rollout_fp8=not rollout_mxfp8,
-        rollout_mxfp8=rollout_mxfp8,
+        train_precision="mxfp8",
+        rollout_precision=rollout_precision,
     )
 
 
 def test_direct_hf_full_train_skips_offline_weight_conversion(tmp_path, monkeypatch):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, args = _direct_hf_args(tmp_path)
     prepare_download = Mock()
     prepare_single = Mock()
     prepare_mxfp8 = Mock()
@@ -156,7 +154,7 @@ def test_direct_hf_full_train_skips_offline_weight_conversion(tmp_path, monkeypa
 
 
 def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkeypatch):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, args = _direct_hf_args(tmp_path)
     source = tmp_path / "DeepSeek-V4-Flash"
     source.mkdir()
     (source / "config.json").write_text('{"expert_dtype": "fp4"}', encoding="utf-8")
@@ -172,7 +170,7 @@ def test_trainer_owned_rollout_uses_dummy_sglang_initialization(tmp_path, monkey
 
 
 def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, args = _direct_hf_args(tmp_path)
     source = tmp_path / "DeepSeek-V4-Flash"
 
     assert module._trainer_checkpoint_path(args) == str(source)
@@ -180,7 +178,7 @@ def test_trainer_owned_rollout_paths_select_source_and_mxfp8_schema(tmp_path):
 
 
 def test_direct_hf_prepare_command_copies_seed_and_schema_to_worker_storage(tmp_path):
-    module, args = _direct_hf_args(tmp_path, rollout_mxfp8=True)
+    module, args = _direct_hf_args(tmp_path)
     args.model_local_dir = str(tmp_path / "worker")
 
     command = module._prepare_cmd(args)["trainer"]
@@ -191,3 +189,54 @@ def test_direct_hf_prepare_command_copies_seed_and_schema_to_worker_storage(tmp_
     assert str(tmp_path / "worker" / "DeepSeek-V4-Flash-MXFP8-schema") in command
     assert args.torch_dist_name not in command
     assert module._prepare_cmd(module.ScriptArgs(hardware="B300")) == {}
+
+
+@pytest.mark.parametrize("train_precision", ["bf16", "blockwise-fp8", "mxfp8"])
+@pytest.mark.parametrize("rollout_precision", ["bf16", "blockwise-fp8", "mxfp8"])
+def test_precision_selections_reach_training_recipe_and_rollout_backends(
+    monkeypatch, tmp_path, train_precision, rollout_precision
+):
+    command = _train_command(
+        monkeypatch,
+        tmp_path,
+        _SINGLE_NODE_4LAYER
+        | {"hardware": "B300", "train_precision": train_precision, "rollout_precision": rollout_precision},
+    )
+
+    assert "--bf16" in command
+    if train_precision == "bf16":
+        assert "--fp8-recipe" not in command
+        assert "--te-precision-config-file" not in command
+    else:
+        recipe = "blockwise" if train_precision == "blockwise-fp8" else "mxfp8"
+        assert f"--fp8-recipe {recipe}" in command
+        assert "--te-precision-config-file" in command
+    gemm = "flashinfer_cutlass" if rollout_precision == "mxfp8" else "auto"
+    moe = "flashinfer_trtllm_routed" if rollout_precision == "mxfp8" else "auto"
+    assert f"--sglang-fp8-gemm-backend {gemm}" in command
+    assert f"--sglang-moe-runner-backend {moe}" in command
+    suffix = {"bf16": "-bf16", "blockwise-fp8": "", "mxfp8": "-MXFP8"}[rollout_precision]
+    assert f"--hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-4layer{suffix} " in command
+
+
+def test_explicit_auto_delegates_backend_selection_to_sglang(monkeypatch, tmp_path):
+    command = _train_command(
+        monkeypatch,
+        tmp_path,
+        _SINGLE_NODE_4LAYER
+        | {
+            "hardware": "B300",
+            "rollout_precision": "mxfp8",
+            "sglang_moe_runner_backend": "auto",
+            "sglang_fp8_gemm_backend": "auto",
+        },
+    )
+    assert "--sglang-moe-runner-backend auto" in command
+    assert "--sglang-fp8-gemm-backend auto" in command
+
+
+@pytest.mark.parametrize("field", ["train_precision", "rollout_precision"])
+def test_mxfp8_requires_blackwell(field):
+    module = import_launch_script(REPO_ROOT / "scripts/run_deepseek_v4.py")
+    with pytest.raises(AssertionError, match="MXFP8 requires Blackwell"):
+        module.ScriptArgs(hardware="H200", **{field: "mxfp8"})
