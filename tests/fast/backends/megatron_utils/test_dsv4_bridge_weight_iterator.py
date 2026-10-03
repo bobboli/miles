@@ -61,10 +61,10 @@ def test_bridge_resolves_name_remap_from_checkpoint_metadata(tmp_path, monkeypat
         save_file({"embed.weight": torch.zeros(2, 2)}, tmp_path / "model.safetensors")
     remap = Mock()
     resolve = Mock(return_value=remap)
-    monkeypatch.setattr(bridge_iterator, "get_param_name_remap", resolve)
+    monkeypatch.setattr(bridge_iterator, "get_param_name_remap_for_checkpoint", resolve)
 
     assert _load_checkpoint_name_remap(str(tmp_path)) is remap
-    resolve.assert_called_once_with(str(config_path), weight_map)
+    resolve.assert_called_once_with(tmp_path)
 
 
 def test_bridge_preserves_names_without_checkpoint_metadata(tmp_path, caplog):

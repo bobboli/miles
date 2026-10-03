@@ -13,7 +13,7 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import megatron_bridge_utils
-from miles.utils.hf_parameter_names import get_checkpoint_weight_map, get_param_name_remap
+from miles.utils.hf_utils.weight_mapping import get_param_name_remap_for_checkpoint
 from miles.utils.lora.utils import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
@@ -164,26 +164,24 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
 def _load_checkpoint_name_remap(checkpoint):
     """Resolve export names from the checkpoint's architecture and tensor namespace."""
-    config_path = Path(checkpoint) / "config.json"
-    index_path = Path(checkpoint) / "model.safetensors.index.json"
-    if not config_path.is_file() or (not index_path.is_file() and not any(Path(checkpoint).glob("*.safetensors"))):
+    path = Path(checkpoint)
+    if not (path / "config.json").is_file() or not _has_safetensors(path):
         logger.warning(
             "Checkpoint %s has no local config or safetensors weights/index; preserving Bridge export names.",
             checkpoint,
         )
         return lambda name: name
-    weight_map = get_checkpoint_weight_map(checkpoint)
-    return get_param_name_remap(str(config_path), weight_map)
+    return get_param_name_remap_for_checkpoint(path)
+
+
+def _has_safetensors(path: Path) -> bool:
+    return (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors"))
 
 
 def _select_bridge_checkpoint(args):
-    """Use an HF trainer seed for export mappings when one is available."""
-    for candidate in (getattr(args, "load", None), getattr(args, "ref_load", None)):
-        if candidate is None:
-            continue
-        path = Path(candidate)
-        if (path / "model.safetensors.index.json").is_file() or any(path.glob("*.safetensors")):
-            return candidate
+    """Use the HF trainer seed for export mappings when one is available."""
+    if args.ref_load is not None and _has_safetensors(Path(args.ref_load)):
+        return args.ref_load
     return args.hf_checkpoint
 
 
