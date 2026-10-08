@@ -13,6 +13,9 @@ subclass declares the projections under the HF names, plain bf16 linears on shar
 
 from __future__ import annotations
 
+import functools
+import logging
+import os
 from abc import ABC, abstractmethod
 from typing import NamedTuple
 
@@ -42,6 +45,8 @@ try:
 except ImportError:
     pass
 
+logger = logging.getLogger(__name__)
+
 WEIGHT_LAYOUT_VERSION = 1
 INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
@@ -68,11 +73,17 @@ def gdn_kernel(backend: str):
     raise ValueError(f"Unsupported GDN backend: {backend}")
 
 
+@functools.cache
 def kda_kernel():
+    """fla's chunk_kda. On Blackwell its backward runs the Triton dqkg kernel (FLA_TILELANG=0), which
+    beats fla's TileLang one there at every tiling; an explicit FLA_TILELANG wins."""
     try:
         from fla.ops.kda import chunk_kda
     except ImportError as exc:
         raise ImportError("KDA requires flash-linear-attention >= 0.5 (fla.ops.kda).") from exc
+    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10:
+        os.environ.setdefault("FLA_TILELANG", "0")
+    logger.info(f"KDA backward: FLA_TILELANG={os.environ.get('FLA_TILELANG', 'unset')}")
     return chunk_kda
 
 
@@ -122,6 +133,22 @@ def kda_recurrence(q, k, v, beta_logits, decay, A_log, dt_bias, *, gate_lower_bo
         **boundaries,
     )
     return out
+
+
+@functools.cache
+def short_conv_backend() -> str:
+    """fla's "mix" (Triton forward, causal-conv1d CUDA backward) when causal-conv1d's backward imports,
+    Triton otherwise; ``FLA_CONV_BACKEND`` overrides, as it does for fla's own ShortConvolution."""
+    backend = os.environ.get("FLA_CONV_BACKEND")
+    if backend is None:
+        try:
+            from causal_conv1d.cpp_functions import causal_conv1d_bwd_function  # noqa: F401
+
+            backend = "mix"
+        except ImportError:
+            backend = "triton"
+    logger.info(f"Linear-attention short conv backend: {backend}")
+    return backend
 
 
 class _ContiguousGrad(torch.autograd.Function):
@@ -178,7 +205,7 @@ class ShardedShortConv(nn.Conv1d):
             dtype=dtype,
         )
         self.activation = "silu"
-        self.backend = "triton"
+        self.backend = short_conv_backend()
         self.tp_group = tp_group
         set_tensor_model_parallel_attributes(self.weight, True, 0, 1)
 
