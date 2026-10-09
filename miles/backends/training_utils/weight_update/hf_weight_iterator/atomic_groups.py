@@ -25,6 +25,9 @@ _DEEPSEEK_V4_GROUPS = [
 ]
 
 
+_DEEPSEEK_V41_GROUPS = [AtomicUpdateGroup("wqkv_a", (".attn.wq_a.weight", ".attn.wkv.weight"))]
+
+
 def get_hf_atomic_update_groups(
     model_name: str,
     *,
@@ -33,6 +36,8 @@ def get_hf_atomic_update_groups(
     """Atomic groups for a model. inkling registers none: its fusions happen
     inside the converter, and its engine-side loads are split-safe."""
     normalized_model_name = model_name.lower().replace("-", "").replace("_", "")
+    if "deepseekv41" in normalized_model_name:
+        return list(_DEEPSEEK_V41_GROUPS)
     if "deepseekv4" in normalized_model_name:
         return list(_DEEPSEEK_V4_GROUPS)
     if "inkling" in normalized_model_name:
