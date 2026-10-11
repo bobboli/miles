@@ -193,9 +193,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         if self.model_name in _PRO_MODEL_NAMES:
             self.enable_r3 = False
         if self.hardware in ("H100", "H200"):
-            assert self.train_precision not in ("mxfp8", "mxfp4-qat") and self.rollout_precision != "mxfp8", (
-                "MXFP8 training/rollout and MXFP4 QAT require Blackwell"
-            )
+            assert (
+                self.train_precision not in ("mxfp8", "mxfp4-qat") and self.rollout_precision != "mxfp8"
+            ), "MXFP8 training/rollout and MXFP4 QAT require Blackwell"
         assert self.rollout_num_nodes >= 0
         assert self.rollout_num_nodes < self.num_nodes
         assert self.cp_size is None or self.cp_size >= 1, f"cp_size must be at least 1, got {self.cp_size}"
@@ -584,6 +584,8 @@ def _train(args: ScriptArgs):
         assert command_utils.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if args.init_model_source == "hf" and args.dsv4_impl != "megatron":
         raise ValueError("Direct-HF DeepSeek-V4 training requires --dsv4-impl megatron.")
+    if args.train_precision == "mxfp4-qat" and args.init_model_source != "hf":
+        raise ValueError("MXFP4 QAT requires --init-model-source hf to configure the Megatron-Bridge provider.")
 
     rollout_checkpoint = _rollout_checkpoint_path(args)
     trainer_checkpoint = _trainer_checkpoint_path(args)

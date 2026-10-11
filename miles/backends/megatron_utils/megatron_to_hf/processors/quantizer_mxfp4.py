@@ -1,4 +1,4 @@
-"""Packed MXFP4 quantization for DeepSeek-V4 routed experts."""
+"""Packed MXFP4 quantization for routed-expert linear weights."""
 
 import re
 

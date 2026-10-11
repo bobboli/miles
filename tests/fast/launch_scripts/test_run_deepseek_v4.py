@@ -284,6 +284,14 @@ def test_mxfp4_qat_rejects_rollout_without_packed_experts(tmp_path):
         module._train(args)
 
 
+def test_mxfp4_qat_requires_bridge_model_construction(tmp_path):
+    module, args = _direct_hf_args(tmp_path, rollout_precision="blockwise-fp8")
+    args.train_precision = "mxfp4-qat"
+    args.init_model_source = "torch_dist"
+    with pytest.raises(ValueError, match="Megatron-Bridge provider"):
+        module._train(args)
+
+
 @pytest.mark.parametrize(("precision", "expert_dtype"), [("mxfp8", "fp4"), ("bf16", "fp4"), ("bf16", "fp8")])
 def test_incompatible_rollout_precision_and_expert_override_are_rejected(tmp_path, precision, expert_dtype):
     module, args = _direct_hf_args(tmp_path, rollout_precision=precision)

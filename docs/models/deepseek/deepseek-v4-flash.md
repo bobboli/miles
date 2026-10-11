@@ -112,7 +112,7 @@ MXFP8 training recipe. Only routed-expert weights are quantized and dequantized
 before their MXFP8 GEMMs, with a straight-through estimator for the weight gradient.
 The optimizer's master weights are not stored in MXFP4; attention, shared experts
 and activations do not receive this MXFP4 fake quantization. This option requires
-Blackwell and packed MXFP4 rollout experts. It replaces the launcher's separate
+Blackwell, `--init-model-source hf`, and packed MXFP4 rollout experts. It replaces the launcher's separate
 `--dsv4-mxfp4-qat` switch; the launcher still passes that internal flag to the trainer.
 For example, use `--train-precision mxfp4-qat --rollout-precision blockwise-fp8
 --rollout-expert-dtype fp4` with the official Flash checkpoint and trainer-owned rollout.
