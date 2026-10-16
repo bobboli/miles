@@ -222,6 +222,21 @@ def test_direct_hf_prepare_command_copies_seed_and_schema_to_worker_storage(tmp_
     assert module._prepare_cmd(module.ScriptArgs(hardware="B300")) == {}
 
 
+def test_train_copies_the_source_checkpoint_to_worker_storage(tmp_path, monkeypatch):
+    module, args = _direct_hf_args(
+        tmp_path,
+        train_precision="mxfp8-mxfp4-routed-expert",
+        rollout_precision="mxfp8-mxfp4-routed-expert",
+        model_local_dir=str(tmp_path / "worker"),
+        skip_saving=True,
+    )
+
+    command = _run_train(monkeypatch, module, args)["prepare_cmd"]["trainer"]
+
+    assert f"{tmp_path / 'DeepSeek-V4-Flash'}/ {tmp_path / 'worker' / 'DeepSeek-V4-Flash'}" in command
+    assert args.hf_checkpoint is None
+
+
 @pytest.mark.parametrize("train_precision", ["bf16", "blockwise-fp8", "mxfp8"])
 @pytest.mark.parametrize("rollout_precision", ["bf16", "blockwise-fp8"])
 def test_precision_selections_reach_training_recipe_and_rollout_checkpoint(

@@ -586,7 +586,6 @@ def _train(args: ScriptArgs):
 
     print(f"[checkpoint] trainer initialization ({args.init_model_source}): {trainer_checkpoint}")
     print(f"[checkpoint] rollout layout ({args.rollout_weight_source}): {rollout_checkpoint}")
-    args.hf_checkpoint = rollout_checkpoint
     print(
         f"[precision] train={args.train_precision}, rollout={args.rollout_precision}, "
         f"rollout_routed_experts={rollout_expert_format}"
