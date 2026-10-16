@@ -2941,6 +2941,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
+            validate_routed_expert_quantization_args(args, hf_config)
 
             if is_dsa(hf_config):
                 getter = getattr(hf_config, "get_text_config", None)
@@ -2970,6 +2971,8 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
         if args.hf_checkpoint:
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
+        if getattr(args, "dsv4_mxfp4_qat", False) or getattr(args, "rollout_routed_expert_format", None):
+            raise ValueError("--dsv4-mxfp4-qat and --rollout-routed-expert-format require the Megatron backend.")
 
         if backend == "fsdp":
             assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
@@ -4331,6 +4334,23 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
     if num_layers is None:
         num_layers = getattr(hf_config, "num_hidden_layers", None)
     return num_layers
+
+
+def validate_routed_expert_quantization_args(args, hf_config) -> None:
+    """Reject routed-expert quantization flags that no code path would apply."""
+    if args.dsv4_mxfp4_qat and args.megatron_to_hf_mode != "bridge":
+        raise ValueError(
+            "--dsv4-mxfp4-qat is applied by the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
+        )
+    if args.rollout_routed_expert_format is not None:
+        quantization_config = getattr(hf_config, "quantization_config", None) or {}
+        if hasattr(quantization_config, "to_dict"):
+            quantization_config = quantization_config.to_dict()
+        if quantization_config.get("quant_method") != "fp8":
+            raise ValueError(
+                "--rollout-routed-expert-format overrides the routed experts of a block-wise FP8 rollout "
+                f"checkpoint, but --hf-checkpoint has quantization_config={quantization_config}."
+            )
 
 
 def hf_validate_args(args, hf_config):
