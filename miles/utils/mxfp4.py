@@ -6,10 +6,7 @@ Torch-only, so checkpoint tooling can use it without importing Megatron.
 import torch
 
 MXFP4_GROUP_SIZE = 32
-E8M0_BIAS = 127
-E2M1_MAX = 6.0
 E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
-_E2M1_VALUES = E2M1_VALUES
 
 
 def quantize_mxfp4(weight, group_size):
@@ -53,7 +50,7 @@ def dequantize_mxfp4(
 
     signs = 1.0 - 2.0 * ((unpacked & 0b1000) >> 3).float()
     magnitudes = unpacked & 0b0111
-    values = torch.tensor(_E2M1_VALUES, dtype=torch.float32, device=weight_packed.device)
+    values = torch.tensor(E2M1_VALUES, dtype=torch.float32, device=weight_packed.device)
     dequantized = signs * values[magnitudes.long()]
 
     assert dequantized.numel() % group_size == 0

@@ -1026,6 +1026,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             # update weight
             parser.add_argument(
+                "--rollout-routed-expert-format",
+                choices=["mxfp8", "mxfp4"],
+                default=None,
+                help=(
+                    "Format of the routed experts in a rollout model whose other weights are block-wise FP8. "
+                    "Online updates encode the routed experts in this format instead of block-wise FP8."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-buffer-size",
                 type=int,
                 default=512 * 1024**2,
@@ -2318,15 +2327,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
-            parser.add_argument(
-                "--rollout-routed-expert-format",
-                choices=["mxfp8", "mxfp4"],
-                default=None,
-                help=(
-                    "Format of the routed experts in a rollout model whose other weights are block-wise FP8. "
-                    "Online updates encode the routed experts in this format instead of block-wise FP8."
-                ),
-            )
             parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
