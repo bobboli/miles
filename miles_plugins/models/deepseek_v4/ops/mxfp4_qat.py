@@ -12,7 +12,7 @@ from miles.utils.mxfp4 import MXFP4_GROUP_SIZE
 
 _CONFIG_ATTR = "dsv4_mxfp4_qat"
 _PATCH_ATTR = "_miles_dsv4_mxfp4_qat_original_get_weight_tensors"
-_GROUPS_PER_PROGRAM = 8
+_GROUPS_PER_PROGRAM = 64
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def mxfp4_quantize_dequantize(weight: torch.Tensor) -> torch.Tensor:
         num_groups,
         GROUP_SIZE=MXFP4_GROUP_SIZE,
         GROUPS_PER_PROGRAM=_GROUPS_PER_PROGRAM,
-        num_warps=8,
+        num_warps=4,
     )
     return output
 
