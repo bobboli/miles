@@ -2319,11 +2319,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
             parser.add_argument(
-                "--rollout-fp4-experts",
-                action="store_true",
+                "--rollout-routed-expert-format",
+                choices=["mxfp8", "mxfp4"],
+                default=None,
                 help=(
-                    "The rollout model holds packed MXFP4 routed experts, so online updates must encode "
-                    "those tensors as MXFP4 rather than block-scaled FP8."
+                    "Format of the routed experts in a rollout model whose other weights are block-wise FP8. "
+                    "Online updates encode the routed experts in this format instead of block-wise FP8."
                 ),
             )
             parser.add_argument(
