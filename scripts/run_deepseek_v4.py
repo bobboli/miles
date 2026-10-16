@@ -776,6 +776,9 @@ def _train(args: ScriptArgs):
         misc_args += "--colocate "
     else:
         misc_args += f"--rollout-num-gpus {args.rollout_num_gpus} "
+        if rollout_expert_format == "mxfp4":
+            # NCCL cannot broadcast the float8_e8m0fnu MXFP4 scales as tensors of their own.
+            misc_args += "--update-weight-transfer-mode broadcast_packed "
 
     if args.dump_details:
         misc_args += f"--dump-details {args.debug_data_root}/{args.run_id}/dump_details "

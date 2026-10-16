@@ -299,6 +299,26 @@ def test_routed_expert_formats_reach_sglang_and_online_updates(
     assert env["MILES_SGLANG_DUMMY_LOAD"] == "1"
 
 
+@pytest.mark.parametrize(
+    ("rollout_precision", "rollout_num_nodes", "packed"),
+    [(_W4A8, 0, False), (_W4A8, 1, True), ("mxfp8", 1, False)],
+)
+def test_disaggregated_mxfp4_rollout_broadcasts_packed_buckets(
+    tmp_path, monkeypatch, rollout_precision, rollout_num_nodes, packed
+):
+    module, args = _direct_hf_args(
+        tmp_path,
+        rollout_precision=rollout_precision,
+        num_nodes=1 + rollout_num_nodes,
+        rollout_num_nodes=rollout_num_nodes,
+        skip_saving=True,
+    )
+
+    train_args = _run_train(monkeypatch, module, args)["train_args"]
+
+    assert ("--update-weight-transfer-mode broadcast_packed " in train_args) == packed
+
+
 def test_explicit_backends_override_the_rollout_precision_defaults(tmp_path, monkeypatch):
     module, args = _direct_hf_args(
         tmp_path, skip_saving=True, sglang_moe_runner_backend="auto", sglang_fp8_gemm_backend="deep_gemm"

@@ -3441,6 +3441,12 @@ def miles_validate_args(args):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+    # NCCL has no float8_e8m0fnu type; the packed mode sends the MXFP4 scales as raw bytes.
+    if mode == "broadcast" and not args.colocate and args.rollout_routed_expert_format == "mxfp4":
+        raise ValueError(
+            "--rollout-routed-expert-format mxfp4 sends float8_e8m0fnu scales, which NCCL cannot broadcast as "
+            "tensors; use --update-weight-transfer-mode broadcast_packed."
+        )
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
