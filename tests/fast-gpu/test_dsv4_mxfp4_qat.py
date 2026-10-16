@@ -12,7 +12,7 @@ from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
 )
 
 register_cuda_ci(
-    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 
 
