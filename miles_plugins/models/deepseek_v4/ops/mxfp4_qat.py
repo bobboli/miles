@@ -90,23 +90,38 @@ def mxfp4_quantize_dequantize(weight: torch.Tensor) -> torch.Tensor:
     return output
 
 
+# Megatron DDP attributes that Transformer Engine reads from the weights it receives.
+_DDP_WEIGHT_ATTRS = ("main_grad", "grad_added_to_main_grad", "zero_out_wgrad")
+
+
 class _MXFP4FakeQuantizeSTE(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, weight: torch.Tensor) -> torch.Tensor:
-        del ctx
+    def forward(ctx, weight: torch.Tensor, wgrad_in_main_grad: bool) -> torch.Tensor:
+        ctx.weight = weight if wgrad_in_main_grad else None
         return mxfp4_quantize_dequantize(weight)
 
     @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        del ctx
-        return grad_output
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        if ctx.weight is not None:
+            # Transformer Engine accumulated the weight gradient into the shared
+            # main_grad and returned a placeholder; DDP must not add it again.
+            ctx.weight.grad_added_to_main_grad = True
+        return grad_output, None
 
 
-def mxfp4_fake_quantize_ste(weight: torch.Tensor) -> torch.Tensor:
-    """Fake-quantize a weight while passing its gradient through unchanged."""
-    output = _MXFP4FakeQuantizeSTE.apply(weight)
-    if hasattr(weight, "main_grad"):
-        output.main_grad = weight.main_grad
+def mxfp4_fake_quantize_ste(weight: torch.Tensor, *, wgrad_in_main_grad: bool = False) -> torch.Tensor:
+    """Fake-quantize a weight while passing its gradient through unchanged.
+
+    The output carries the weight's DDP attributes, so a GEMM that fuses weight-gradient
+    accumulation adds into the weight's main_grad. With ``wgrad_in_main_grad`` the
+    backward marks that gradient as already added, as Transformer Engine does for the
+    weights it receives directly.
+    """
+    wgrad_in_main_grad = wgrad_in_main_grad and hasattr(weight, "grad_added_to_main_grad")
+    output = _MXFP4FakeQuantizeSTE.apply(weight, wgrad_in_main_grad)
+    for attr in _DDP_WEIGHT_ATTRS:
+        if hasattr(weight, attr):
+            setattr(output, attr, getattr(weight, attr))
     return output
 
 
@@ -116,9 +131,22 @@ def _wrap_get_weight_tensors(original: Callable) -> Callable:
         weights = original(module)
         if not getattr(module.config, _CONFIG_ATTR, False):
             return weights
-        return [mxfp4_fake_quantize_ste(weight) for weight in weights]
+        if any(hasattr(weight, "__fsdp_param__") or hasattr(weight, "get_main_grad") for weight in weights):
+            raise RuntimeError("DeepSeek V4 MXFP4 QAT does not support Megatron FSDP weights.")
+        wgrad_in_main_grad = getattr(module.config, "gradient_accumulation_fusion", False)
+        return [mxfp4_fake_quantize_ste(weight, wgrad_in_main_grad=wgrad_in_main_grad) for weight in weights]
 
     return get_weight_tensors
+
+
+def validate_dsv4_mxfp4_qat_config(config) -> None:
+    """Reject configurations whose routed experts would not reach the fake-quantization hook."""
+    if not getattr(config, "moe_grouped_gemm", False):
+        raise ValueError("DeepSeek V4 MXFP4 QAT requires grouped-GEMM routed experts (moe_grouped_gemm).")
+    if getattr(config, "use_transformer_engine_op_fuser", False):
+        raise ValueError("DeepSeek V4 MXFP4 QAT does not support the Transformer Engine op fuser.")
+    if getattr(config, "delay_wgrad_compute", False):
+        raise ValueError("DeepSeek V4 MXFP4 QAT does not support delayed weight-gradient computation.")
 
 
 def install_dsv4_mxfp4_qat() -> None:

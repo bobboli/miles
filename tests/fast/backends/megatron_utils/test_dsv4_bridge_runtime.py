@@ -74,9 +74,30 @@ def test_bridge_runtime_resolves_native_dsv4_kernel_default(backend):
 
 def test_bridge_runtime_installs_mxfp4_qat_when_enabled():
     provider = _provider()
+    provider.moe_grouped_gemm = True
 
     with patch("miles_plugins.models.deepseek_v4.ops.mxfp4_qat.install_dsv4_mxfp4_qat") as install_qat:
         _apply_bridge_runtime_config(provider, _runtime_args(dsv4_mxfp4_qat=True))
 
     install_qat.assert_called_once_with()
     assert provider.dsv4_mxfp4_qat is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("moe_grouped_gemm", False, "grouped-GEMM routed experts"),
+        ("use_transformer_engine_op_fuser", True, "op fuser"),
+        ("delay_wgrad_compute", True, "delayed weight-gradient"),
+    ],
+)
+def test_bridge_runtime_rejects_mxfp4_qat_that_would_bypass_the_hook(field, value, message):
+    provider = _provider()
+    provider.moe_grouped_gemm = True
+    setattr(provider, field, value)
+
+    with patch("miles_plugins.models.deepseek_v4.ops.mxfp4_qat.install_dsv4_mxfp4_qat") as install_qat:
+        with pytest.raises(ValueError, match=message):
+            _apply_bridge_runtime_config(provider, _runtime_args(dsv4_mxfp4_qat=True))
+
+    install_qat.assert_not_called()

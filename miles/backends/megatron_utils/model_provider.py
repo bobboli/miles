@@ -89,8 +89,12 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     provider.dsv4_mxfp4_qat = getattr(args, "dsv4_mxfp4_qat", False)
     if provider.dsv4_mxfp4_qat:
-        from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import install_dsv4_mxfp4_qat
+        from miles_plugins.models.deepseek_v4.ops.mxfp4_qat import (
+            install_dsv4_mxfp4_qat,
+            validate_dsv4_mxfp4_qat_config,
+        )
 
+        validate_dsv4_mxfp4_qat_config(provider)
         install_dsv4_mxfp4_qat()
 
     # MoE token dispatcher (same-name, always present)
