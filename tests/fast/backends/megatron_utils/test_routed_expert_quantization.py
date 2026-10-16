@@ -42,3 +42,13 @@ def test_other_weights_stay_block_wise_fp8(quantizers, expert_format):
     processors.quantize_params(args, _SHARED_EXPERT, [], _FP8_CONFIG)
 
     assert quantizers == ["quantize_params_fp8"]
+
+
+@pytest.mark.parametrize("expert_format", ["mxfp8", "mxfp4"])
+def test_routed_experts_excluded_by_the_checkpoint_stay_on_the_fp8_path(quantizers, expert_format):
+    args = SimpleNamespace(rollout_routed_expert_format=expert_format)
+    config = _FP8_CONFIG | {"modules_to_not_convert": ["layers.3.ffn.experts"]}
+
+    processors.quantize_params(args, _EXPERT, [("layers.3.ffn.experts.7.w1.weight", None)], config)
+
+    assert quantizers == ["quantize_params_fp8"]
