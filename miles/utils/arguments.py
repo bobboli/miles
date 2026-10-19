@@ -2988,6 +2988,7 @@ def parse_args(add_custom_arguments=None, entry="train", preprocess_args=None):
 
     if backend == "megatron":
         megatron_validate_args(args)
+        _retain_checkpoints_by_rollout(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -3424,6 +3425,17 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
             "--enable-sample-ownership-checker needs an event directory: "
             "pass --save-debug-event-data, --save, or --dump-details"
         )
+
+
+def _retain_checkpoints_by_rollout(args) -> None:
+    """Take --save-retain-interval away from Megatron and apply it to rollouts.
+
+    Megatron keeps an old checkpoint only when its iteration is a multiple of the interval, but rollout r
+    is saved as iteration r, so the periodic saves (19, 39, ...) never qualify and only the latest would
+    survive. The Megatron actor prunes by rollout count instead (prune_unretained_checkpoints).
+    """
+    args.rollout_save_retain_interval = args.save_retain_interval
+    args.save_retain_interval = None
 
 
 def miles_validate_args(args):

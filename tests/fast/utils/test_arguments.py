@@ -26,6 +26,7 @@ from miles.utils.arguments import (
     _resolve_rollout_functions,
     _resolve_run_uuid,
     _resolve_sample_ownership_check,
+    _retain_checkpoints_by_rollout,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -3542,3 +3543,15 @@ class TestMilesValidateArgsDiskDeltaResume:
         load_dir.mkdir()
 
         miles_validate_args(self._parse(load_dir, tmp_path))
+
+
+class TestRetainCheckpointsByRollout:
+    @pytest.mark.parametrize("interval", [None, 60])
+    def test_megatron_is_left_without_a_retain_interval(self, interval: int | None) -> None:
+        """Megatron would count the interval in rollout ids 19, 39, ... and delete every saved checkpoint."""
+        args = SimpleNamespace(save_retain_interval=interval)
+
+        _retain_checkpoints_by_rollout(args)
+
+        assert args.save_retain_interval is None
+        assert args.rollout_save_retain_interval == interval
