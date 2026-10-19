@@ -17,6 +17,7 @@ from megatron.training.checkpointing import load_checkpoint as _load_checkpoint_
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.global_vars import get_args
 
+from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionSampleConsumptionUtils,
@@ -185,6 +186,25 @@ def save_checkpoint_with_lora(
         )
     else:
         save_checkpoint(iteration, model, optimizer, opt_param_scheduler)
+
+
+def prune_unretained_checkpoints(save_dir: str, *, retain_interval: int) -> None:
+    """Delete the checkpoints older than the latest one that do not close a retained stretch of rollouts.
+
+    Rollout ``r`` is saved as iteration ``r``, so the checkpoint taken after every ``retain_interval``
+    rollouts is iteration ``k * retain_interval - 1``. The latest checkpoint is always kept, and a newer
+    directory that an unfinished asynchronous save is still writing is left alone.
+    """
+    latest = read_checkpoint_tracker_iteration(save_dir)
+    if latest is None:
+        return
+    for path in Path(save_dir).glob("iter_*"):
+        if not re.fullmatch(r"iter_\d{7}", path.name):
+            continue
+        iteration = int(path.name.removeprefix("iter_"))
+        if iteration < latest and (iteration + 1) % retain_interval != 0:
+            logger.info(f"Deleting checkpoint {path}: not retained every {retain_interval} rollouts")
+            shutil.rmtree(path)
 
 
 def publish_as_release(save_dir: str) -> None:
